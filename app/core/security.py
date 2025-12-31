@@ -3,14 +3,11 @@ from typing import Optional
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 import random
 import string
 
 from app.core.config import settings
-from app.core.database import get_db
-from app.models.models import User
+from app.core.database import get_database
 
 security = HTTPBearer()
 
@@ -82,10 +79,9 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db)
-) -> User:
-    """Get current authenticated user"""
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> dict:
+    """Get current authenticated user from MongoDB"""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -102,11 +98,11 @@ async def get_current_user(
     if phone is None:
         raise credentials_exception
     
-    result = await db.execute(select(User).where(User.phone == phone))
-    user = result.scalar_one_or_none()
+    # Get user from MongoDB
+    db = get_database()
+    user = await db.users.find_one({"phone": phone})
     
     if user is None:
         raise credentials_exception
     
     return user
-

@@ -1,23 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 from typing import List, Optional
 from datetime import datetime
-from app.core.database import get_db
+from bson import ObjectId
+
+from app.core.database import get_database
 from app.core.security import get_current_user
-from app.models.models import Tournament, Team, TournamentRegistration, User
 from app.schemas.schemas import (
     TournamentCreate, TournamentUpdate, TournamentResponse,
     TeamCreate, TeamUpdate, TeamResponse,
     TournamentRegistrationCreate, TournamentRegistrationUpdate, TournamentRegistrationResponse
 )
 
-router = APIRouter(prefix="/tournaments", tags=["tournaments"])
+router = APIRouter(tags=["tournaments"])
 
 
 # ==================== TOURNAMENT ENDPOINTS ====================
 
-@router.get("", response_model=List[TournamentResponse])
+@router.get("")
 async def get_tournaments(
     city: Optional[str] = None,
     sport_type: Optional[str] = None,
@@ -26,359 +25,401 @@ async def get_tournaments(
     gender_category: Optional[str] = None,
     search: Optional[str] = None,
     skip: int = 0,
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db)
+    limit: int = 50
 ):
     """Get list of tournaments with filters"""
-    query = select(Tournament).where(Tournament.is_active == True)
+    db = get_database()
+    
+    query = {"is_active": True}
     
     if city:
-        query = query.where(Tournament.city == city)
+        query["city"] = city
     if sport_type:
-        query = query.where(Tournament.sport_type == sport_type)
+        query["sport_type"] = sport_type
     if status:
-        query = query.where(Tournament.status == status)
+        query["status"] = status
     if age_category:
-        query = query.where(Tournament.age_category == age_category)
+        query["age_category"] = age_category
     if gender_category:
-        query = query.where(Tournament.gender_category == gender_category)
+        query["gender_category"] = gender_category
     if search:
-        query = query.where(
-            (Tournament.name.ilike(f"%{search}%")) |
-            (Tournament.description.ilike(f"%{search}%"))
-        )
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"description": {"$regex": search, "$options": "i"}}
+        ]
     
-    # Order by featured first, then by start date
-    query = query.order_by(Tournament.is_featured.desc(), Tournament.start_date.asc())
-    query = query.offset(skip).limit(limit)
+    tournaments_cursor = db.tournaments.find(query).skip(skip).limit(limit).sort([("is_featured", -1), ("start_date", 1)])
+    tournaments = await tournaments_cursor.to_list(length=limit)
     
-    result = await db.execute(query)
-    tournaments = result.scalars().all()
+    for tournament in tournaments:
+        tournament["id"] = str(tournament["_id"])
+
+        del tournament["_id"]  # Remove ObjectId
+    
     return tournaments
 
 
-@router.get("/{tournament_id}", response_model=TournamentResponse)
-async def get_tournament(tournament_id: int, db: AsyncSession = Depends(get_db)):
+@router.get("/{tournament_id}")
+async def get_tournament(tournament_id: str):
     """Get tournament details"""
-    result = await db.execute(select(Tournament).where(Tournament.id == tournament_id))
-    tournament = result.scalar_one_or_none()
+    db = get_database()
+    
+    try:
+        tournament = await db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid tournament ID")
     
     if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
     
     # Increment views count
-    tournament.views_count += 1
-    await db.commit()
+    await db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$inc": {"views_count": 1}}
+    )
     
+    tournament["id"] = str(tournament["_id"])
+    
+    # Fetch organizer details
+    organizer_id = tournament.get("organizer_id")
+    if organizer_id:
+        try:
+            organizer = await db.users.find_one({"_id": ObjectId(organizer_id)})
+            if organizer:
+                tournament["organizer"] = {
+                    "id": str(organizer["_id"]),
+                    "name": organizer.get("name", "Anonymous"),
+                    "role": organizer.get("role"),
+                    "professional_type": organizer.get("professional_type"),
+                    "city": organizer.get("city"),
+                    "state": organizer.get("state"),
+                    "bio": organizer.get("bio"),
+                    "avatar": organizer.get("avatar"),
+                    "is_verified": organizer.get("is_verified", False)
+                }
+        except:
+            # If organizer fetch fails, just continue without organizer data
+            pass
+    
+    del tournament["_id"]  # Remove ObjectId
     return tournament
 
 
-@router.post("", response_model=TournamentResponse)
+@router.post("")
 async def create_tournament(
     tournament_data: TournamentCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
-    """Create a new tournament"""
-    new_tournament = Tournament(
-        **tournament_data.model_dump(),
-        organizer_id=current_user.id
-    )
+    """Create new tournament"""
+    db = get_database()
     
-    db.add(new_tournament)
-    await db.commit()
-    await db.refresh(new_tournament)
-    return new_tournament
+    tournament_dict = tournament_data.dict()
+    tournament_dict["organizer_id"] = str(current_user["_id"])
+    tournament_dict["created_at"] = datetime.utcnow()
+    tournament_dict["updated_at"] = datetime.utcnow()
+    tournament_dict["current_teams"] = 0
+    tournament_dict["views_count"] = 0
+    tournament_dict["is_active"] = True
+    tournament_dict["status"] = "upcoming"
+    
+    result = await db.tournaments.insert_one(tournament_dict)
+    created_tournament = await db.tournaments.find_one({"_id": result.inserted_id})
+    created_tournament["id"] = str(created_tournament["_id"])
+
+    del created_tournament["_id"]  # Remove ObjectId
+    
+    return created_tournament
 
 
-@router.put("/{tournament_id}", response_model=TournamentResponse)
+@router.put("/{tournament_id}")
 async def update_tournament(
-    tournament_id: int,
+    tournament_id: str,
     tournament_data: TournamentUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
-    """Update tournament details"""
-    result = await db.execute(select(Tournament).where(Tournament.id == tournament_id))
-    tournament = result.scalar_one_or_none()
+    """Update tournament"""
+    db = get_database()
+    
+    try:
+        tournament = await db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid tournament ID")
     
     if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
     
-    if tournament.organizer_id != current_user.id:
+    # Check if user is organizer
+    if str(tournament["organizer_id"]) != str(current_user["_id"]):
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    # Update fields
-    for field, value in tournament_data.model_dump(exclude_unset=True).items():
-        setattr(tournament, field, value)
+    update_data = {k: v for k, v in tournament_data.dict(exclude_unset=True).items() if v is not None}
+    update_data["updated_at"] = datetime.utcnow()
     
-    await db.commit()
-    await db.refresh(tournament)
-    return tournament
+    await db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$set": update_data}
+    )
+    
+    updated_tournament = await db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    updated_tournament["id"] = str(updated_tournament["_id"])
+
+    del updated_tournament["_id"]  # Remove ObjectId
+    
+    return updated_tournament
 
 
 @router.delete("/{tournament_id}")
 async def delete_tournament(
-    tournament_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    tournament_id: str,
+    current_user: dict = Depends(get_current_user)
 ):
     """Delete/deactivate tournament"""
-    result = await db.execute(select(Tournament).where(Tournament.id == tournament_id))
-    tournament = result.scalar_one_or_none()
+    db = get_database()
+    
+    try:
+        tournament = await db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid tournament ID")
     
     if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
     
-    if tournament.organizer_id != current_user.id:
+    # Check if user is organizer
+    if str(tournament["organizer_id"]) != str(current_user["_id"]):
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    tournament.is_active = False
-    await db.commit()
+    # Soft delete
+    await db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
+    )
     
     return {"message": "Tournament deleted successfully"}
 
 
 # ==================== TEAM ENDPOINTS ====================
 
-@router.get("/teams/list", response_model=List[TeamResponse])
-async def get_teams(
-    city: Optional[str] = None,
-    sport_type: Optional[str] = None,
-    search: Optional[str] = None,
-    skip: int = 0,
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db)
-):
-    """Get list of teams"""
-    query = select(Team).where(Team.is_active == True)
-    
-    if city:
-        query = query.where(Team.city == city)
-    if sport_type:
-        query = query.where(Team.sport_type == sport_type)
-    if search:
-        query = query.where(
-            (Team.name.ilike(f"%{search}%")) |
-            (Team.description.ilike(f"%{search}%"))
-        )
-    
-    query = query.order_by(Team.created_at.desc())
-    query = query.offset(skip).limit(limit)
-    
-    result = await db.execute(query)
-    teams = result.scalars().all()
-    return teams
-
-
-@router.get("/teams/{team_id}", response_model=TeamResponse)
-async def get_team(team_id: int, db: AsyncSession = Depends(get_db)):
-    """Get team details"""
-    result = await db.execute(select(Team).where(Team.id == team_id))
-    team = result.scalar_one_or_none()
-    
-    if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
-    
-    return team
-
-
-@router.post("/teams", response_model=TeamResponse)
+@router.post("/teams")
 async def create_team(
     team_data: TeamCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
-    """Create a new team"""
-    new_team = Team(
-        **team_data.model_dump(),
-        captain_id=current_user.id,
-        total_players=len(team_data.players) if team_data.players else 0
-    )
+    """Create new team"""
+    db = get_database()
     
-    db.add(new_team)
-    await db.commit()
-    await db.refresh(new_team)
-    return new_team
+    team_dict = team_data.dict()
+    team_dict["captain_id"] = str(current_user["_id"])
+    team_dict["created_at"] = datetime.utcnow()
+    team_dict["updated_at"] = datetime.utcnow()
+    team_dict["total_players"] = len(team_dict.get("players", []))
+    team_dict["is_active"] = True
+    team_dict["is_verified"] = False
+    
+    result = await db.teams.insert_one(team_dict)
+    created_team = await db.teams.find_one({"_id": result.inserted_id})
+    created_team["id"] = str(created_team["_id"])
+
+    del created_team["_id"]  # Remove ObjectId
+    
+    return created_team
 
 
-@router.put("/teams/{team_id}", response_model=TeamResponse)
-async def update_team(
-    team_id: int,
-    team_data: TeamUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+@router.get("/teams")
+async def get_user_teams(
+    current_user: dict = Depends(get_current_user),
+    skip: int = 0,
+    limit: int = 50
 ):
-    """Update team details"""
-    result = await db.execute(select(Team).where(Team.id == team_id))
-    team = result.scalar_one_or_none()
+    """Get user's teams"""
+    db = get_database()
+    
+    teams_cursor = db.teams.find({"captain_id": str(current_user["_id"])}).skip(skip).limit(limit)
+    teams = await teams_cursor.to_list(length=limit)
+    
+    for team in teams:
+        team["id"] = str(team["_id"])
+
+        del team["_id"]  # Remove ObjectId
+    
+    return teams
+
+
+@router.get("/teams/{team_id}")
+async def get_team(team_id: str):
+    """Get team details"""
+    db = get_database()
+    
+    try:
+        team = await db.teams.find_one({"_id": ObjectId(team_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid team ID")
     
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     
-    if team.captain_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    team["id"] = str(team["_id"])
+
     
-    # Update fields
-    for field, value in team_data.model_dump(exclude_unset=True).items():
-        setattr(team, field, value)
-    
-    # Update total_players if players list is updated
-    if team_data.players is not None:
-        team.total_players = len(team_data.players)
-    
-    await db.commit()
-    await db.refresh(team)
+    del team["_id"]  # Remove ObjectId
     return team
 
 
-@router.get("/teams/my-teams/list", response_model=List[TeamResponse])
-async def get_my_teams(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+@router.put("/teams/{team_id}")
+async def update_team(
+    team_id: str,
+    team_data: TeamUpdate,
+    current_user: dict = Depends(get_current_user)
 ):
-    """Get teams where current user is captain"""
-    result = await db.execute(
-        select(Team).where(Team.captain_id == current_user.id, Team.is_active == True)
+    """Update team"""
+    db = get_database()
+    
+    try:
+        team = await db.teams.find_one({"_id": ObjectId(team_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid team ID")
+    
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    
+    # Check if user is captain
+    if str(team["captain_id"]) != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    update_data = {k: v for k, v in team_data.dict(exclude_unset=True).items() if v is not None}
+    update_data["updated_at"] = datetime.utcnow()
+    
+    # Update total_players if players list is updated
+    if "players" in update_data:
+        update_data["total_players"] = len(update_data["players"])
+    
+    await db.teams.update_one(
+        {"_id": ObjectId(team_id)},
+        {"$set": update_data}
     )
-    teams = result.scalars().all()
-    return teams
+    
+    updated_team = await db.teams.find_one({"_id": ObjectId(team_id)})
+    updated_team["id"] = str(updated_team["_id"])
+
+    del updated_team["_id"]  # Remove ObjectId
+    
+    return updated_team
 
 
 # ==================== TOURNAMENT REGISTRATION ENDPOINTS ====================
 
-@router.post("/{tournament_id}/register", response_model=TournamentRegistrationResponse)
+@router.post("/{tournament_id}/register")
 async def register_team(
-    tournament_id: int,
+    tournament_id: str,
     registration_data: TournamentRegistrationCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
-    """Register a team for a tournament"""
+    """Register team for tournament"""
+    db = get_database()
+    
     # Verify tournament exists
-    tournament_result = await db.execute(select(Tournament).where(Tournament.id == tournament_id))
-    tournament = tournament_result.scalar_one_or_none()
+    try:
+        tournament = await db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid tournament ID")
     
     if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
     
-    # Check registration deadline
-    if datetime.utcnow() > tournament.registration_deadline:
-        raise HTTPException(status_code=400, detail="Registration deadline has passed")
-    
-    # Check if tournament is full
-    if tournament.current_teams >= tournament.max_teams:
+    # Check if tournament is accepting registrations
+    if tournament["current_teams"] >= tournament["max_teams"]:
         raise HTTPException(status_code=400, detail="Tournament is full")
     
-    # Verify team exists and user is captain
-    team_result = await db.execute(select(Team).where(Team.id == registration_data.team_id))
-    team = team_result.scalar_one_or_none()
+    # Verify team exists
+    try:
+        team = await db.teams.find_one({"_id": ObjectId(registration_data.team_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid team ID")
     
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     
-    if team.captain_id != current_user.id:
+    # Check if user is team captain
+    if str(team["captain_id"]) != str(current_user["_id"]):
         raise HTTPException(status_code=403, detail="Only team captain can register")
     
-    # Check if team is already registered
-    existing_reg = await db.execute(
-        select(TournamentRegistration).where(
-            TournamentRegistration.tournament_id == tournament_id,
-            TournamentRegistration.team_id == registration_data.team_id
-        )
-    )
-    if existing_reg.scalar_one_or_none():
+    # Check if team already registered
+    existing_registration = await db.tournament_registrations.find_one({
+        "tournament_id": tournament_id,
+        "team_id": registration_data.team_id
+    })
+    
+    if existing_registration:
         raise HTTPException(status_code=400, detail="Team already registered for this tournament")
     
     # Generate registration number
-    reg_number = f"REG-TOUR{tournament_id:03d}-TEAM{registration_data.team_id:03d}"
+    reg_count = await db.tournament_registrations.count_documents({})
+    registration_number = f"REG-TOUR{tournament_id[-3:]}-TEAM{reg_count + 1:04d}"
     
-    # Create registration
-    new_registration = TournamentRegistration(
-        **registration_data.model_dump(),
-        registration_number=reg_number,
-        registered_by=current_user.id,
-        entry_fee=tournament.entry_fee
+    registration_dict = registration_data.dict()
+    registration_dict["tournament_id"] = tournament_id
+    registration_dict["registered_by"] = str(current_user["_id"])
+    registration_dict["registration_number"] = registration_number
+    registration_dict["registration_date"] = datetime.utcnow()
+    registration_dict["created_at"] = datetime.utcnow()
+    registration_dict["updated_at"] = datetime.utcnow()
+    registration_dict["status"] = "pending"
+    registration_dict["payment_status"] = "pending"
+    
+    result = await db.tournament_registrations.insert_one(registration_dict)
+    
+    # Increment tournament's current_teams count
+    await db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$inc": {"current_teams": 1}}
     )
     
-    db.add(new_registration)
+    created_registration = await db.tournament_registrations.find_one({"_id": result.inserted_id})
+    created_registration["id"] = str(created_registration["_id"])
+
+    del created_registration["_id"]  # Remove ObjectId
     
-    # Update tournament team count
-    tournament.current_teams += 1
-    
-    await db.commit()
-    await db.refresh(new_registration)
-    return new_registration
+    return created_registration
 
 
-@router.get("/{tournament_id}/registrations", response_model=List[TournamentRegistrationResponse])
+@router.get("/{tournament_id}/registrations")
 async def get_tournament_registrations(
-    tournament_id: int,
-    status: Optional[str] = None,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    tournament_id: str,
+    skip: int = 0,
+    limit: int = 50
 ):
-    """Get all registrations for a tournament"""
-    # Verify tournament exists and user is organizer
-    tournament_result = await db.execute(select(Tournament).where(Tournament.id == tournament_id))
-    tournament = tournament_result.scalar_one_or_none()
+    """Get tournament registrations"""
+    db = get_database()
     
-    if not tournament:
-        raise HTTPException(status_code=404, detail="Tournament not found")
+    registrations_cursor = db.tournament_registrations.find({"tournament_id": tournament_id}).skip(skip).limit(limit)
+    registrations = await registrations_cursor.to_list(length=limit)
     
-    query = select(TournamentRegistration).where(TournamentRegistration.tournament_id == tournament_id)
+    for registration in registrations:
+        registration["id"] = str(registration["_id"])
+
+        del registration["_id"]  # Remove ObjectId
     
-    if status:
-        query = query.where(TournamentRegistration.status == status)
-    
-    result = await db.execute(query)
-    registrations = result.scalars().all()
     return registrations
 
 
-@router.put("/registrations/{registration_id}", response_model=TournamentRegistrationResponse)
-async def update_registration(
-    registration_id: int,
-    registration_data: TournamentRegistrationUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+@router.get("/registrations/{registration_id}")
+async def get_registration(
+    registration_id: str,
+    current_user: dict = Depends(get_current_user)
 ):
-    """Update registration status (organizer only)"""
-    result = await db.execute(select(TournamentRegistration).where(TournamentRegistration.id == registration_id))
-    registration = result.scalar_one_or_none()
+    """Get registration details"""
+    db = get_database()
+    
+    try:
+        registration = await db.tournament_registrations.find_one({"_id": ObjectId(registration_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid registration ID")
     
     if not registration:
         raise HTTPException(status_code=404, detail="Registration not found")
     
-    # Verify user is tournament organizer
-    tournament_result = await db.execute(select(Tournament).where(Tournament.id == registration.tournament_id))
-    tournament = tournament_result.scalar_one_or_none()
+    registration["id"] = str(registration["_id"])
+
     
-    if tournament.organizer_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    
-    # Update fields
-    for field, value in registration_data.model_dump(exclude_unset=True).items():
-        setattr(registration, field, value)
-    
-    if registration_data.status == "approved":
-        registration.approval_date = datetime.utcnow()
-        registration.approved_by = current_user.id
-    
-    await db.commit()
-    await db.refresh(registration)
+    del registration["_id"]  # Remove ObjectId
     return registration
-
-
-@router.get("/registrations/my-registrations/list", response_model=List[TournamentRegistrationResponse])
-async def get_my_registrations(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get current user's tournament registrations"""
-    result = await db.execute(
-        select(TournamentRegistration).where(TournamentRegistration.registered_by == current_user.id)
-    )
-    registrations = result.scalars().all()
-    return registrations
 
