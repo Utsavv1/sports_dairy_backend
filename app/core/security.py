@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import random
@@ -75,7 +76,7 @@ def decode_token(token: str) -> Optional[dict]:
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         return payload
-    except JWTError:
+    except InvalidTokenError:
         return None
 
 async def get_current_user(
