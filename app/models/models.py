@@ -1,588 +1,558 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, JSON, Float
+from pydantic import BaseModel, Field
+from typing import Optional, List, Any
 from datetime import datetime
-from app.core.database import Base
+from bson import ObjectId
 
-class User(Base):
-    __tablename__ = "users"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    phone = Column(String(15), unique=True, index=True, nullable=False)
-    name = Column(String(100))
-    email = Column(String(100), unique=True, index=True)
-    age = Column(Integer)
-    gender = Column(String(20))
+# Helper for MongoDB ObjectId
+class PyObjectId(ObjectId):
+    @classmethod
+    def __get_validators__(cls):
+        yield cls.validate
+
+    @classmethod
+    def validate(cls, v):
+        if not ObjectId.is_valid(v):
+            raise ValueError("Invalid ObjectId")
+        return ObjectId(v)
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        return {"type": "string"}
+
+
+# Base model with common fields
+class MongoBaseModel(BaseModel):
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        populate_by_name = True
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: str, datetime: lambda v: v.isoformat()}
+
+
+# User Model
+class User(MongoBaseModel):
+    phone: str = Field(..., index=True)
+    name: Optional[str] = None
+    email: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[str] = None
     
     # Role-based fields
-    role = Column(String(50))  # Player, Parent, Professional
-    professional_type = Column(String(50))  # Umpire, Coach, Trainer, Venue Owner, etc.
+    role: Optional[str] = None  # Player, Parent, Professional
+    professional_type: Optional[str] = None  # Umpire, Coach, Trainer, Venue Owner, etc.
     
     # Location
-    city = Column(String(50))
-    state = Column(String(50), default="Gujarat")
-    latitude = Column(Float)  # User's current/preferred latitude
-    longitude = Column(Float)  # User's current/preferred longitude
+    city: Optional[str] = None
+    state: str = "Gujarat"
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     
     # Profile
-    bio = Column(String(500))
-    avatar = Column(String(255))
+    bio: Optional[str] = None
+    avatar: Optional[str] = None
     
-    # Sports preferences (stored as JSON array)
-    sports_interests = Column(JSON)  # ["Cricket", "Football", "Badminton"]
+    # Sports preferences
+    sports_interests: Optional[List[str]] = []
     
     # Player-specific fields
-    player_position = Column(String(50))  # For sports like Football, Cricket
-    playing_style = Column(String(100))
+    player_position: Optional[str] = None
+    playing_style: Optional[str] = None
     
     # Professional-specific fields
-    certification = Column(String(200))
-    experience_years = Column(Integer)
+    certification: Optional[str] = None
+    experience_years: Optional[int] = None
     
     # Parent-specific fields
-    children_count = Column(Integer)
+    children_count: Optional[int] = None
     
     # System fields
-    is_active = Column(Boolean, default=True)
-    is_verified = Column(Boolean, default=False)
-    onboarding_completed = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active: bool = True
+    is_verified: bool = False
+    onboarding_completed: bool = False
 
 
-class SportsStats(Base):
-    __tablename__ = "sports_stats"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, index=True, nullable=False)
-    sport_type = Column(String(50), nullable=False)  # Cricket, Football, etc.
+# Sports Stats Model
+class SportsStats(MongoBaseModel):
+    user_id: str = Field(..., index=True)
+    sport_type: str
     
     # Universal stats
-    matches_played = Column(Integer, default=0)
-    wins = Column(Integer, default=0)
-    losses = Column(Integer, default=0)
-    draws = Column(Integer, default=0)
+    matches_played: int = 0
+    wins: int = 0
+    losses: int = 0
+    draws: int = 0
     
-    # Sport-specific stats (stored as JSON for flexibility)
-    detailed_stats = Column(JSON)  # Cricket: runs, wickets, etc. | Football: goals, assists
+    # Sport-specific stats (flexible JSON)
+    detailed_stats: Optional[dict] = {}
     
     # Performance metrics
-    rating = Column(Float, default=0.0)
-    achievements = Column(JSON)  # Array of achievement objects
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    rating: float = 0.0
+    achievements: Optional[List[dict]] = []
 
 
-class Venue(Base):
-    __tablename__ = "venues"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    owner_id = Column(Integer, index=True)  # User ID of venue owner
+# Venue Model
+class Venue(MongoBaseModel):
+    owner_id: Optional[str] = None
     
     # Basic Info
-    name = Column(String(200), nullable=False)
-    description = Column(String(1000))
-    venue_type = Column(String(50))  # Turf, Court, Ground, Stadium
+    name: str
+    description: Optional[str] = None
+    venue_type: Optional[str] = None
     
     # Sports & Facilities
-    sports_available = Column(JSON)  # ["Cricket", "Football", "Tennis"]
-    amenities = Column(JSON)  # ["Parking", "Changing Room", "Cafeteria", "First Aid"]
+    sports_available: Optional[List[str]] = []
+    amenities: Optional[List[str]] = []
     
     # Location
-    city = Column(String(50), nullable=False, index=True)
-    state = Column(String(50), default="Gujarat")
-    address = Column(String(500))
-    landmark = Column(String(200))
-    latitude = Column(Float)
-    longitude = Column(Float)
+    city: str = Field(..., index=True)
+    state: str = "Gujarat"
+    address: Optional[str] = None
+    landmark: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     
     # Pricing & Availability
-    price_per_hour = Column(Float, nullable=False)
-    weekend_price = Column(Float)  # Different pricing for weekends
-    peak_hour_price = Column(Float)  # Evening pricing
-    currency = Column(String(10), default="INR")
+    price_per_hour: float
+    weekend_price: Optional[float] = None
+    peak_hour_price: Optional[float] = None
+    currency: str = "INR"
     
     # Operating Hours
-    opening_time = Column(String(10))  # "06:00"
-    closing_time = Column(String(10))  # "23:00"
-    operating_days = Column(JSON)  # ["Monday", "Tuesday", ...]
+    opening_time: Optional[str] = None
+    closing_time: Optional[str] = None
+    operating_days: Optional[List[str]] = []
     
     # Venue Details
-    capacity = Column(Integer)  # Max players
-    surface_type = Column(String(50))  # Turf, Concrete, Wooden, etc.
-    indoor_outdoor = Column(String(20))  # Indoor/Outdoor/Both
-    images = Column(JSON)  # Array of image URLs
+    capacity: Optional[int] = None
+    surface_type: Optional[str] = None
+    indoor_outdoor: Optional[str] = None
+    images: Optional[List[str]] = []
     
     # Contact & Social
-    contact_number = Column(String(15))
-    email = Column(String(100))
-    website = Column(String(200))
+    contact_number: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
     
     # Ratings & Reviews
-    rating = Column(Float, default=0.0)
-    total_reviews = Column(Integer, default=0)
+    rating: float = 0.0
+    total_reviews: int = 0
     
     # Business Metrics
-    total_bookings = Column(Integer, default=0)
-    is_verified = Column(Boolean, default=False)
-    is_featured = Column(Boolean, default=False)
+    total_bookings: int = 0
+    is_verified: bool = False
+    is_featured: bool = False
     
     # Status
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active: bool = True
 
 
-class Booking(Base):
-    __tablename__ = "bookings"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    booking_number = Column(String(50), unique=True, index=True)  # BK-20250101-001
+# Booking Model
+class Booking(MongoBaseModel):
+    booking_number: str = Field(..., index=True)
     
     # Relationships
-    user_id = Column(Integer, index=True, nullable=False)
-    venue_id = Column(Integer, index=True, nullable=False)
+    user_id: str
+    venue_id: str
     
     # Booking Details
-    sport_type = Column(String(50))
-    booking_date = Column(String(20), nullable=False)  # "2025-01-15"
-    start_time = Column(String(10), nullable=False)  # "18:00"
-    end_time = Column(String(10), nullable=False)  # "19:00"
-    duration_hours = Column(Float)
+    sport_type: Optional[str] = None
+    booking_date: str
+    start_time: str
+    end_time: str
+    duration_hours: Optional[float] = None
     
     # Players & Team
-    player_count = Column(Integer)
-    team_name = Column(String(100))
-    contact_person = Column(String(100))
-    contact_number = Column(String(15))
+    player_count: Optional[int] = None
+    team_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_number: Optional[str] = None
     
     # Pricing
-    base_price = Column(Float, nullable=False)
-    additional_charges = Column(JSON)  # [{"item": "Equipment", "amount": 200}]
-    discount_amount = Column(Float, default=0.0)
-    total_amount = Column(Float, nullable=False)
+    base_price: float
+    additional_charges: Optional[List[dict]] = []
+    discount_amount: float = 0.0
+    total_amount: float
     
     # Payment
-    payment_status = Column(String(20), default="pending")  # pending, partial, paid, refunded
-    payment_method = Column(String(50))  # UPI, Card, Cash, Split
-    paid_amount = Column(Float, default=0.0)
-    payment_date = Column(DateTime)
-    transaction_id = Column(String(100))
+    payment_status: str = "pending"
+    payment_method: Optional[str] = None
+    paid_amount: float = 0.0
+    payment_date: Optional[datetime] = None
+    transaction_id: Optional[str] = None
     
     # Split Pay
-    is_split_payment = Column(Boolean, default=False)
-    split_payment_data = Column(JSON)  # [{"user": "name", "amount": 500, "status": "paid"}]
-    split_payment_link = Column(String(200))
+    is_split_payment: bool = False
+    split_payment_data: Optional[List[dict]] = []
+    split_payment_link: Optional[str] = None
     
     # Status & Lifecycle
-    status = Column(String(20), default="confirmed")  # pending, confirmed, completed, cancelled
-    booking_source = Column(String(50), default="app")  # app, web, phone
+    status: str = "confirmed"
+    booking_source: str = "app"
     
     # Notes & Special Requests
-    special_requests = Column(String(500))
-    admin_notes = Column(String(500))
-    cancellation_reason = Column(String(500))
-    cancelled_at = Column(DateTime)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    special_requests: Optional[str] = None
+    admin_notes: Optional[str] = None
+    cancellation_reason: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
 
 
-class VenueReview(Base):
-    __tablename__ = "venue_reviews"
+# Venue Review Model
+class VenueReview(MongoBaseModel):
+    venue_id: str
+    user_id: str
+    booking_id: Optional[str] = None
     
-    id = Column(Integer, primary_key=True, index=True)
-    venue_id = Column(Integer, index=True, nullable=False)
-    user_id = Column(Integer, index=True, nullable=False)
-    booking_id = Column(Integer)
-    
-    rating = Column(Integer, nullable=False)  # 1-5
-    review_text = Column(String(1000))
-    images = Column(JSON)  # Review images
+    rating: int  # 1-5
+    review_text: Optional[str] = None
+    images: Optional[List[str]] = []
     
     # Detailed Ratings
-    cleanliness_rating = Column(Integer)
-    facilities_rating = Column(Integer)
-    staff_rating = Column(Integer)
-    value_rating = Column(Integer)
+    cleanliness_rating: Optional[int] = None
+    facilities_rating: Optional[int] = None
+    staff_rating: Optional[int] = None
+    value_rating: Optional[int] = None
     
-    is_verified = Column(Boolean, default=False)
-    helpful_count = Column(Integer, default=0)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_verified: bool = False
+    helpful_count: int = 0
 
 
-class VenueSlot(Base):
-    __tablename__ = "venue_slots"
+# Venue Slot Model
+class VenueSlot(MongoBaseModel):
+    venue_id: str
     
-    id = Column(Integer, primary_key=True, index=True)
-    venue_id = Column(Integer, index=True, nullable=False)
+    date: str  # "2025-01-15"
+    start_time: str  # "18:00"
+    end_time: str  # "19:00"
     
-    date = Column(String(20), nullable=False, index=True)  # "2025-01-15"
-    start_time = Column(String(10), nullable=False)  # "18:00"
-    end_time = Column(String(10), nullable=False)  # "19:00"
+    is_available: bool = True
+    booking_id: Optional[str] = None
     
-    is_available = Column(Boolean, default=True)
-    booking_id = Column(Integer)  # If booked
-    
-    price = Column(Float)  # Dynamic pricing for this slot
-    blocked_reason = Column(String(200))  # Maintenance, Private Event, etc.
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    price: Optional[float] = None
+    blocked_reason: Optional[str] = None
 
 
-class Shop(Base):
-    __tablename__ = "shops"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    owner_id = Column(Integer, index=True)  # User ID of shop owner
+# Shop Model
+class Shop(MongoBaseModel):
+    owner_id: Optional[str] = None
     
     # Basic Info
-    name = Column(String(200), nullable=False)
-    description = Column(String(1000))
-    shop_type = Column(String(50))  # Retail, Wholesale, Online, Manufacturer
-    category = Column(String(50))  # Equipment, Jerseys, Nutrition, Accessories
+    name: str
+    description: Optional[str] = None
+    shop_type: Optional[str] = None
+    category: Optional[str] = None
     
     # Products & Services
-    products = Column(JSON)  # [{"name": "Cricket Bat", "price": 2500, "image": "url"}]
-    specialization = Column(JSON)  # ["Cricket Equipment", "Custom Jerseys"]
-    brands_available = Column(JSON)  # ["Nike", "Adidas", "SG", "MRF"]
+    products: Optional[List[dict]] = []
+    specialization: Optional[List[str]] = []
+    brands_available: Optional[List[str]] = []
     
     # Location
-    city = Column(String(50), nullable=False, index=True)
-    state = Column(String(50), default="Gujarat")
-    address = Column(String(500))
-    landmark = Column(String(200))
-    latitude = Column(Float)
-    longitude = Column(Float)
+    city: str = Field(..., index=True)
+    state: str = "Gujarat"
+    address: Optional[str] = None
+    landmark: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     
     # Contact & Business
-    contact_number = Column(String(15), nullable=False)
-    whatsapp_number = Column(String(15))
-    email = Column(String(100))
-    website = Column(String(200))
+    contact_number: str
+    whatsapp_number: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
     
     # Business Details
-    established_year = Column(Integer)
-    gst_number = Column(String(50))
-    license_number = Column(String(50))
+    established_year: Optional[int] = None
+    gst_number: Optional[str] = None
+    license_number: Optional[str] = None
     
     # Operating Hours
-    opening_time = Column(String(10))
-    closing_time = Column(String(10))
-    operating_days = Column(JSON)
+    opening_time: Optional[str] = None
+    closing_time: Optional[str] = None
+    operating_days: Optional[List[str]] = []
     
     # Media
-    logo = Column(String(255))
-    images = Column(JSON)  # Shop photos
-    catalogue_pdf = Column(String(255))
+    logo: Optional[str] = None
+    images: Optional[List[str]] = []
+    catalogue_pdf: Optional[str] = None
     
     # Ratings & Stats
-    rating = Column(Float, default=0.0)
-    total_reviews = Column(Integer, default=0)
-    total_enquiries = Column(Integer, default=0)
+    rating: float = 0.0
+    total_reviews: int = 0
+    total_enquiries: int = 0
     
     # Features
-    home_delivery = Column(Boolean, default=False)
-    online_payment = Column(Boolean, default=False)
-    bulk_orders = Column(Boolean, default=False)
-    custom_manufacturing = Column(Boolean, default=False)
+    home_delivery: bool = False
+    online_payment: bool = False
+    bulk_orders: bool = False
+    custom_manufacturing: bool = False
     
     # Listing
-    is_featured = Column(Boolean, default=False)
-    is_verified = Column(Boolean, default=False)
-    is_active = Column(Boolean, default=True)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_featured: bool = False
+    is_verified: bool = False
+    is_active: bool = True
 
 
-class Job(Base):
-    __tablename__ = "jobs"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    posted_by = Column(Integer, index=True, nullable=False)  # User ID
+# Job Model
+class Job(MongoBaseModel):
+    posted_by: str
     
     # Job Details
-    title = Column(String(200), nullable=False)
-    job_type = Column(String(50), nullable=False)  # Umpire, Coach, Scorer, Physio, Trainer, Manager
-    description = Column(String(2000), nullable=False)
-    sport_type = Column(String(50))  # Cricket, Football, Tennis, All
+    title: str
+    job_type: str
+    description: str
+    sport_type: Optional[str] = None
     
     # Employment Type
-    employment_type = Column(String(50))  # Full-time, Part-time, Freelance, Contract, Per Match
-    experience_required = Column(String(100))  # 0-2 years, 2-5 years, 5+ years
-    certification_required = Column(JSON)  # ["Level 1 Umpire", "B License Coach"]
+    employment_type: Optional[str] = None
+    experience_required: Optional[str] = None
+    certification_required: Optional[List[str]] = []
     
     # Location
-    city = Column(String(50), nullable=False, index=True)
-    state = Column(String(50), default="Gujarat")
-    location_type = Column(String(50))  # On-site, Remote, Hybrid
-    latitude = Column(Float)
-    longitude = Column(Float)
+    city: str = Field(..., index=True)
+    state: str = "Gujarat"
+    location_type: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     
     # Compensation
-    salary_min = Column(Float)
-    salary_max = Column(Float)
-    salary_type = Column(String(50))  # Per Month, Per Match, Per Hour, Per Session
-    currency = Column(String(10), default="INR")
-    other_benefits = Column(JSON)  # ["Travel Allowance", "Accommodation"]
+    salary_min: Optional[float] = None
+    salary_max: Optional[float] = None
+    salary_type: Optional[str] = None
+    currency: str = "INR"
+    other_benefits: Optional[List[str]] = []
     
     # Requirements
-    skills_required = Column(JSON)  # ["Match Management", "Player Development"]
-    language_required = Column(JSON)  # ["English", "Gujarati", "Hindi"]
-    min_age = Column(Integer)
-    max_age = Column(Integer)
+    skills_required: Optional[List[str]] = []
+    language_required: Optional[List[str]] = []
+    min_age: Optional[int] = None
+    max_age: Optional[int] = None
     
     # Application
-    application_deadline = Column(DateTime)
-    how_to_apply = Column(String(500))
-    application_email = Column(String(100))
-    application_phone = Column(String(15))
-    application_url = Column(String(255))
+    application_deadline: Optional[datetime] = None
+    how_to_apply: Optional[str] = None
+    application_email: Optional[str] = None
+    application_phone: Optional[str] = None
+    application_url: Optional[str] = None
     
     # Stats
-    views_count = Column(Integer, default=0)
-    applications_count = Column(Integer, default=0)
+    views_count: int = 0
+    applications_count: int = 0
     
     # Status
-    status = Column(String(20), default="active")  # active, filled, closed, expired
-    is_featured = Column(Boolean, default=False)
-    is_verified = Column(Boolean, default=False)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    expires_at = Column(DateTime)
+    status: str = "active"
+    is_featured: bool = False
+    is_verified: bool = False
+    expires_at: Optional[datetime] = None
 
 
-class Dictionary(Base):
-    __tablename__ = "dictionary"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    
+# Dictionary Model (includes Academies)
+class Dictionary(MongoBaseModel):
     # Content
-    term = Column(String(200), nullable=False, index=True)
-    sport = Column(String(50), nullable=False, index=True)  # Cricket, Football, Tennis, etc.
-    category = Column(String(50))  # Rules, Terminology, Technique, Equipment, Academy
+    term: str
+    sport: str
+    category: Optional[str] = None
     
     # Location (for Academies)
-    city = Column(String(50), index=True)
-    state = Column(String(50))
-    address = Column(String(500))
-    latitude = Column(Float)
-    longitude = Column(Float)
+    city: Optional[str] = None
+    state: Optional[str] = None
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     
     # Contact (for Academies)
-    contact_number = Column(String(15))
-    contact_email = Column(String(100))
+    contact_number: Optional[str] = None
+    contact_email: Optional[str] = None
     
     # Details
-    definition = Column(String(2000), nullable=False)
-    explanation = Column(String(5000))  # Detailed explanation
-    examples = Column(JSON)  # Array of example sentences/scenarios
+    definition: str
+    explanation: Optional[str] = None
+    examples: Optional[List[str]] = []
     
     # Media
-    images = Column(JSON)  # Illustration images
-    video_url = Column(String(255))  # Tutorial video
-    diagram_url = Column(String(255))  # Diagram/infographic
+    images: Optional[List[str]] = []
+    video_url: Optional[str] = None
+    diagram_url: Optional[str] = None
     
     # Related Content
-    related_terms = Column(JSON)  # Array of related term IDs
-    tags = Column(JSON)  # ["beginner", "advanced", "rule", "technique"]
+    related_terms: Optional[List[str]] = []
+    tags: Optional[List[str]] = []
     
     # Multilingual Support
-    gujarati_term = Column(String(200))
-    hindi_term = Column(String(200))
+    gujarati_term: Optional[str] = None
+    hindi_term: Optional[str] = None
     
     # Stats
-    views_count = Column(Integer, default=0)
-    helpful_count = Column(Integer, default=0)
+    views_count: int = 0
+    helpful_count: int = 0
     
     # SEO & Organization
-    slug = Column(String(255), unique=True, index=True)
-    difficulty_level = Column(String(20))  # Beginner, Intermediate, Advanced
+    slug: Optional[str] = None
+    difficulty_level: Optional[str] = None
     
-    is_featured = Column(Boolean, default=False)
-    is_active = Column(Boolean, default=True)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_featured: bool = False
+    is_active: bool = True
 
 
-class Tournament(Base):
-    __tablename__ = "tournaments"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    organizer_id = Column(Integer, index=True, nullable=False)  # User ID
+# Tournament Model
+class Tournament(MongoBaseModel):
+    organizer_id: str
     
     # Basic Info
-    name = Column(String(200), nullable=False)
-    description = Column(String(2000))
-    sport_type = Column(String(50), nullable=False)  # Cricket, Football, etc.
-    tournament_type = Column(String(50))  # League, Knockout, Round-Robin, Mixed
+    name: str
+    description: Optional[str] = None
+    sport_type: str
+    tournament_type: Optional[str] = None
     
     # Format Details
-    format = Column(String(100))  # T20, ODI, 5-a-side, 11-a-side, etc.
-    team_size = Column(Integer)  # Players per team
-    max_teams = Column(Integer, nullable=False)
-    min_teams = Column(Integer)
-    current_teams = Column(Integer, default=0)
+    format: Optional[str] = None
+    team_size: Optional[int] = None
+    max_teams: int
+    min_teams: Optional[int] = None
+    current_teams: int = 0
     
     # Categories
-    age_category = Column(String(50))  # U-14, U-16, U-19, Open, Senior
-    gender_category = Column(String(20))  # Men, Women, Mixed
-    skill_level = Column(String(50))  # Beginner, Intermediate, Professional
+    age_category: Optional[str] = None
+    gender_category: Optional[str] = None
+    skill_level: Optional[str] = None
     
     # Location
-    city = Column(String(50), nullable=False, index=True)
-    state = Column(String(50), default="Gujarat")
-    venue_name = Column(String(200))
-    venue_address = Column(String(500))
-    venue_id = Column(Integer)  # Link to Venue if available
-    latitude = Column(Float)
-    longitude = Column(Float)
+    city: str = Field(..., index=True)
+    state: str = "Gujarat"
+    venue_name: Optional[str] = None
+    venue_address: Optional[str] = None
+    venue_id: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     
     # Schedule
-    start_date = Column(DateTime, nullable=False)
-    end_date = Column(DateTime)
-    registration_start = Column(DateTime)
-    registration_deadline = Column(DateTime, nullable=False)
+    start_date: datetime
+    end_date: Optional[datetime] = None
+    registration_start: Optional[datetime] = None
+    registration_deadline: datetime
     
     # Fees & Prizes
-    entry_fee = Column(Float, default=0)
-    currency = Column(String(10), default="INR")
-    prize_pool = Column(Float)
-    prize_distribution = Column(JSON)  # [{"position": "Winner", "prize": 50000}]
+    entry_fee: float = 0
+    currency: str = "INR"
+    prize_pool: Optional[float] = None
+    prize_distribution: Optional[List[dict]] = []
     
     # Registration Requirements
-    documents_required = Column(JSON)  # ["ID Proof", "Age Certificate"]
-    team_composition_rules = Column(JSON)  # Min/max players, substitutes
+    documents_required: Optional[List[str]] = []
+    team_composition_rules: Optional[dict] = {}
     
     # Rules & Regulations
-    rules = Column(String(5000))
-    match_rules = Column(JSON)  # Specific match rules
-    ball_type = Column(String(50))  # Tennis ball, Leather, etc.
+    rules: Optional[str] = None
+    match_rules: Optional[dict] = {}
+    ball_type: Optional[str] = None
     
     # Media & Branding
-    banner_image = Column(String(255))
-    logo = Column(String(255))
-    images = Column(JSON)
+    banner_image: Optional[str] = None
+    logo: Optional[str] = None
+    images: Optional[List[str]] = []
     
     # Contact
-    contact_person = Column(String(100))
-    contact_number = Column(String(15))
-    contact_email = Column(String(100))
+    contact_person: Optional[str] = None
+    contact_number: Optional[str] = None
+    contact_email: Optional[str] = None
     
     # Features
-    live_scoring = Column(Boolean, default=False)
-    live_streaming = Column(Boolean, default=False)
-    certificates_provided = Column(Boolean, default=False)
+    live_scoring: bool = False
+    live_streaming: bool = False
+    certificates_provided: bool = False
     
     # Stats
-    views_count = Column(Integer, default=0)
+    views_count: int = 0
     
     # Status
-    status = Column(String(20), default="upcoming")  # upcoming, ongoing, completed, cancelled
-    is_featured = Column(Boolean, default=False)
-    is_verified = Column(Boolean, default=False)
-    is_active = Column(Boolean, default=True)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    status: str = "upcoming"
+    is_featured: bool = False
+    is_verified: bool = False
+    is_active: bool = True
 
 
-class Team(Base):
-    __tablename__ = "teams"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    captain_id = Column(Integer, index=True, nullable=False)  # User ID
-    tournament_id = Column(Integer, index=True)  # If registered for tournament
+# Team Model
+class Team(MongoBaseModel):
+    captain_id: str
+    tournament_id: Optional[str] = None
     
     # Team Details
-    name = Column(String(200), nullable=False)
-    short_name = Column(String(50))
-    description = Column(String(1000))
-    sport_type = Column(String(50), nullable=False)
+    name: str
+    short_name: Optional[str] = None
+    description: Optional[str] = None
+    sport_type: str
     
     # Location
-    city = Column(String(50), nullable=False)
-    state = Column(String(50), default="Gujarat")
-    home_ground = Column(String(200))
+    city: str
+    state: str = "Gujarat"
+    home_ground: Optional[str] = None
     
     # Team Info
-    logo = Column(String(255))
-    jersey_color = Column(String(50))
-    founded_year = Column(Integer)
-    team_type = Column(String(50))  # Club, Corporate, College, Friends
+    logo: Optional[str] = None
+    jersey_color: Optional[str] = None
+    founded_year: Optional[int] = None
+    team_type: Optional[str] = None
     
-    # Players (JSON array of player objects)
-    players = Column(JSON)  # [{"user_id": 1, "name": "Player 1", "role": "Batsman", "jersey_no": 10}]
-    total_players = Column(Integer, default=0)
+    # Players
+    players: Optional[List[dict]] = []
+    total_players: int = 0
     
     # Management
-    coach_name = Column(String(100))
-    manager_name = Column(String(100))
-    manager_contact = Column(String(15))
+    coach_name: Optional[str] = None
+    manager_name: Optional[str] = None
+    manager_contact: Optional[str] = None
     
     # Stats
-    matches_played = Column(Integer, default=0)
-    matches_won = Column(Integer, default=0)
-    matches_lost = Column(Integer, default=0)
-    matches_drawn = Column(Integer, default=0)
+    matches_played: int = 0
+    matches_won: int = 0
+    matches_lost: int = 0
+    matches_drawn: int = 0
     
-    # Documents (for tournament registration)
-    documents = Column(JSON)  # [{"type": "ID Proof", "url": "...", "status": "verified"}]
+    # Documents
+    documents: Optional[List[dict]] = []
     
     # Status
-    is_verified = Column(Boolean, default=False)
-    is_active = Column(Boolean, default=True)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_verified: bool = False
+    is_active: bool = True
 
 
-class TournamentRegistration(Base):
-    __tablename__ = "tournament_registrations"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    registration_number = Column(String(50), unique=True, index=True)  # REG-TOUR001-TEAM001
+# Tournament Registration Model
+class TournamentRegistration(MongoBaseModel):
+    registration_number: str
     
     # Relationships
-    tournament_id = Column(Integer, index=True, nullable=False)
-    team_id = Column(Integer, index=True, nullable=False)
-    registered_by = Column(Integer, nullable=False)  # User ID (captain)
+    tournament_id: str
+    team_id: str
+    registered_by: str
     
     # Registration Details
-    registration_date = Column(DateTime, default=datetime.utcnow)
+    registration_date: datetime = Field(default_factory=datetime.utcnow)
     
-    # Team Roster for this tournament
-    team_roster = Column(JSON)  # Snapshot of players at registration time
-    captain_name = Column(String(100))
-    captain_contact = Column(String(15))
-    vice_captain_name = Column(String(100))
+    # Team Roster
+    team_roster: Optional[List[dict]] = []
+    captain_name: Optional[str] = None
+    captain_contact: Optional[str] = None
+    vice_captain_name: Optional[str] = None
     
     # Payment
-    entry_fee = Column(Float, default=0)
-    payment_status = Column(String(20), default="pending")  # pending, paid, refunded
-    payment_method = Column(String(50))
-    payment_date = Column(DateTime)
-    transaction_id = Column(String(100))
+    entry_fee: float = 0
+    payment_status: str = "pending"
+    payment_method: Optional[str] = None
+    payment_date: Optional[datetime] = None
+    transaction_id: Optional[str] = None
     
     # Documents Submission
-    documents_submitted = Column(JSON)  # [{"type": "...", "url": "...", "verified": true}]
-    documents_verified = Column(Boolean, default=False)
+    documents_submitted: Optional[List[dict]] = []
+    documents_verified: bool = False
     
     # Status
-    status = Column(String(20), default="pending")  # pending, approved, rejected, withdrawn
-    approval_date = Column(DateTime)
-    approved_by = Column(Integer)  # Admin user ID
-    rejection_reason = Column(String(500))
+    status: str = "pending"
+    approval_date: Optional[datetime] = None
+    approved_by: Optional[str] = None
+    rejection_reason: Optional[str] = None
     
     # Notes
-    special_requests = Column(String(500))
-    admin_notes = Column(String(500))
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
+    special_requests: Optional[str] = None
+    admin_notes: Optional[str] = None

@@ -1,8 +1,5 @@
 import uvicorn
-import asyncio
 import socket
-from app.core.database import init_db
-from app.models import models  # Import models to register them
 
 def get_network_addresses(port=8000):
     """Get all network IP addresses for the server"""
@@ -25,22 +22,17 @@ def get_network_addresses(port=8000):
     
     return addresses
 
-async def startup():
-    """Initialize database on startup"""
-    await init_db()
-    print("Database initialized successfully!")
-
 if __name__ == "__main__":
     PORT = 8000
-    
-    # Initialize database
-    asyncio.run(startup())
     
     # Get and display all network addresses
     addresses = get_network_addresses(PORT)
     
-    print("\n  BACKEND API ready\n")
-    print(f"  ->  Local:   http://localhost:{PORT}/")
+    print("\n" + "="*60)
+    print("  🚀 BACKEND API WITH MONGODB READY")
+    print("="*60)
+    print(f"\n  ->  Local:   http://localhost:{PORT}/")
+    print(f"  ->  Docs:    http://localhost:{PORT}/docs")
     
     # Display network addresses (same format as Vite frontend)
     network_addresses = [addr for addr in addresses if not addr.startswith("http://localhost")]
@@ -48,7 +40,10 @@ if __name__ == "__main__":
         for addr in network_addresses:
             print(f"  ->  Network: {addr}")
     
-    print("")  # Empty line like Vite
+    print("\n" + "="*60)
+    print("  💾 Database: MongoDB @ localhost:27017")
+    print("  📊 Database Name: sports_diary")
+    print("="*60 + "\n")
     
     # Run server
     uvicorn.run(
@@ -57,4 +52,3 @@ if __name__ == "__main__":
         port=PORT,
         reload=True
     )
-

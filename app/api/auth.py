@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import timedelta
+from datetime import timedelta, datetime
+from bson import ObjectId
+from typing import Optional
 
-from app.core.database import get_db
+from app.core.database import get_database
 from app.core.config import settings
 from app.core.security import (
     generate_otp, store_otp, verify_otp, 
@@ -33,7 +33,7 @@ async def send_otp(request: OTPRequest):
     }
 
 @router.post("/verify-otp", response_model=Token)
-async def verify_otp_endpoint(request: OTPVerify, db: AsyncSession = Depends(get_db)):
+async def verify_otp_endpoint(request: OTPVerify):
     """Verify OTP and return access token"""
     print(f"[AUTH] Verifying OTP for phone: {request.phone}, OTP: {request.otp}")
     
@@ -46,154 +46,416 @@ async def verify_otp_endpoint(request: OTPVerify, db: AsyncSession = Depends(get
     
     print(f"[AUTH] OTP verification SUCCESS for {request.phone}")
     
+    # Get database
+    db = get_database()
+    
     # Check if user exists
-    result = await db.execute(select(User).where(User.phone == request.phone))
-    user = result.scalar_one_or_none()
+    user_data = await db.users.find_one({"phone": request.phone})
     
     is_new_user = False
-    if not user:
+    if not user_data:
         # Create new user
-        user = User(phone=request.phone, is_verified=True)
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
+        new_user = {
+            "phone": request.phone,
+            "is_verified": True,
+            "is_active": True,
+            "onboarding_completed": False,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        result = await db.users.insert_one(new_user)
+        user_data = await db.users.find_one({"_id": result.inserted_id})
         is_new_user = True
     else:
-        user.is_verified = True
-        await db.commit()
+        # Update verification status
+        await db.users.update_one(
+            {"_id": user_data["_id"]},
+            {"$set": {"is_verified": True, "updated_at": datetime.utcnow()}}
+        )
+        user_data = await db.users.find_one({"_id": user_data["_id"]})
     
     # Create access token
     access_token = create_access_token(
-        data={"sub": user.phone},
+        data={"sub": request.phone},
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
+    
+    # Convert MongoDB _id to string
+    user_data["id"] = str(user_data["_id"])
     
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "user": {
-            "id": user.id,
-            "phone": user.phone,
-            "name": user.name,
-            "email": user.email,
-            "age": user.age,
-            "gender": user.gender,
-            "role": user.role,
-            "professional_type": user.professional_type,
-            "city": user.city,
-            "state": user.state,
-            "bio": user.bio,
-            "avatar": user.avatar,
-            "sports_interests": user.sports_interests,
-            "onboarding_completed": user.onboarding_completed,
+            "id": user_data["id"],
+            "phone": user_data.get("phone"),
+            "name": user_data.get("name"),
+            "email": user_data.get("email"),
+            "age": user_data.get("age"),
+            "gender": user_data.get("gender"),
+            "role": user_data.get("role"),
+            "professional_type": user_data.get("professional_type"),
+            "city": user_data.get("city"),
+            "state": user_data.get("state"),
+            "bio": user_data.get("bio"),
+            "avatar": user_data.get("avatar"),
+            "sports_interests": user_data.get("sports_interests", []),
+            "onboarding_completed": user_data.get("onboarding_completed", False),
             "is_new_user": is_new_user,
-            "is_verified": user.is_verified
+            "is_verified": user_data.get("is_verified", False)
         }
     }
 
-@router.get("/me", response_model=UserResponse)
-async def get_me(current_user: User = Depends(get_current_user)):
+@router.get("/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
     """Get current user profile"""
-    return current_user
+    # Convert MongoDB _id to string and return clean response
+    return {
+        "id": str(current_user["_id"]),
+        "phone": current_user.get("phone"),
+        "name": current_user.get("name"),
+        "email": current_user.get("email"),
+        "age": current_user.get("age"),
+        "gender": current_user.get("gender"),
+        "role": current_user.get("role"),
+        "professional_type": current_user.get("professional_type"),
+        "city": current_user.get("city"),
+        "state": current_user.get("state"),
+        "latitude": current_user.get("latitude"),
+        "longitude": current_user.get("longitude"),
+        "bio": current_user.get("bio"),
+        "avatar": current_user.get("avatar"),
+        "sports_interests": current_user.get("sports_interests", []),
+        "player_position": current_user.get("player_position"),
+        "playing_style": current_user.get("playing_style"),
+        "certification": current_user.get("certification"),
+        "experience_years": current_user.get("experience_years"),
+        "children_count": current_user.get("children_count"),
+        "onboarding_completed": current_user.get("onboarding_completed", False),
+        "is_verified": current_user.get("is_verified", False),
+        "is_active": current_user.get("is_active", True),
+        "created_at": current_user.get("created_at"),
+        "updated_at": current_user.get("updated_at")
+    }
 
-@router.post("/profile", response_model=UserResponse)
+@router.get("/users/search")
+async def search_users(
+    query: str,
+    role: Optional[str] = None,
+    city: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 10
+):
+    """Search for users by name, role, or location"""
+    db = get_database()
+    
+    # Build search query
+    search_filter = {"is_active": True}
+    
+    # Text search on name
+    if query:
+        search_filter["name"] = {"$regex": query, "$options": "i"}
+    
+    # Filter by role
+    if role:
+        search_filter["role"] = role
+    
+    # Filter by city
+    if city:
+        search_filter["city"] = {"$regex": city, "$options": "i"}
+    
+    # Execute search
+    users_cursor = db.users.find(search_filter).skip(skip).limit(limit)
+    users = await users_cursor.to_list(length=limit)
+    
+    # Return public profile information
+    results = []
+    for user in users:
+        results.append({
+            "id": str(user["_id"]),
+            "name": user.get("name", "Anonymous"),
+            "role": user.get("role"),
+            "professional_type": user.get("professional_type"),
+            "city": user.get("city"),
+            "state": user.get("state"),
+            "bio": user.get("bio"),
+            "avatar": user.get("avatar"),
+            "sports_interests": user.get("sports_interests", []),
+            "is_verified": user.get("is_verified", False)
+        })
+    
+    return {
+        "results": results,
+        "total": len(results)
+    }
+
+@router.get("/users/{user_id}")
+async def get_user_by_id(user_id: str):
+    """Get user profile by user ID (public profile)"""
+    db = get_database()
+    
+    try:
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Fetch tournaments created by this user
+    tournaments = []
+    try:
+        tournaments_cursor = db.tournaments.find(
+            {"organizer_id": user_id, "is_active": True}
+        ).sort([("start_date", -1)]).limit(10)
+        tournaments_list = await tournaments_cursor.to_list(length=10)
+        
+        for tournament in tournaments_list:
+            tournaments.append({
+                "id": str(tournament["_id"]),
+                "name": tournament.get("name"),
+                "sport_type": tournament.get("sport_type"),
+                "tournament_type": tournament.get("tournament_type"),
+                "city": tournament.get("city"),
+                "state": tournament.get("state"),
+                "start_date": tournament.get("start_date"),
+                "end_date": tournament.get("end_date"),
+                "status": tournament.get("status"),
+                "current_teams": tournament.get("current_teams", 0),
+                "max_teams": tournament.get("max_teams", 0),
+                "prize_pool": tournament.get("prize_pool"),
+                "entry_fee": tournament.get("entry_fee"),
+                "is_featured": tournament.get("is_featured", False),
+                "is_verified": tournament.get("is_verified", False)
+            })
+    except Exception as e:
+        print(f"Error fetching tournaments: {e}")
+    
+    # Fetch jobs posted by this user
+    jobs = []
+    try:
+        jobs_cursor = db.jobs.find(
+            {"posted_by": user_id, "status": "active"}
+        ).sort([("created_at", -1)]).limit(10)
+        jobs_list = await jobs_cursor.to_list(length=10)
+        
+        for job in jobs_list:
+            jobs.append({
+                "id": str(job["_id"]),
+                "title": job.get("title"),
+                "job_type": job.get("job_type"),
+                "sport_type": job.get("sport_type"),
+                "employment_type": job.get("employment_type"),
+                "city": job.get("city"),
+                "state": job.get("state"),
+                "salary_min": job.get("salary_min"),
+                "salary_max": job.get("salary_max"),
+                "salary_type": job.get("salary_type"),
+                "experience_required": job.get("experience_required"),
+                "application_deadline": job.get("application_deadline"),
+                "status": job.get("status"),
+                "is_featured": job.get("is_featured", False),
+                "is_verified": job.get("is_verified", False)
+            })
+    except Exception as e:
+        print(f"Error fetching jobs: {e}")
+    
+    # Return public profile information with tournaments and jobs
+    return {
+        "id": str(user["_id"]),
+        "name": user.get("name", "Anonymous"),
+        "role": user.get("role"),
+        "professional_type": user.get("professional_type"),
+        "city": user.get("city"),
+        "state": user.get("state"),
+        "bio": user.get("bio"),
+        "avatar": user.get("avatar"),
+        "sports_interests": user.get("sports_interests", []),
+        "player_position": user.get("player_position"),
+        "playing_style": user.get("playing_style"),
+        "certification": user.get("certification"),
+        "experience_years": user.get("experience_years"),
+        "is_verified": user.get("is_verified", False),
+        "tournaments": tournaments,
+        "jobs": jobs
+    }
+
+@router.post("/profile")
 async def create_profile(
     profile: UserProfileCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
     """Create/Update user profile after OTP verification"""
-    current_user.name = profile.name
-    current_user.email = profile.email
-    current_user.age = profile.age
-    current_user.gender = profile.gender
-    current_user.role = profile.role
-    current_user.professional_type = profile.professional_type
-    current_user.city = profile.city
-    current_user.state = profile.state
-    current_user.bio = profile.bio
-    current_user.sports_interests = profile.sports_interests
-    current_user.player_position = profile.player_position
-    current_user.playing_style = profile.playing_style
-    current_user.certification = profile.certification
-    current_user.experience_years = profile.experience_years
-    current_user.children_count = profile.children_count
-    current_user.onboarding_completed = True
+    db = get_database()
     
-    await db.flush()
-    await db.refresh(current_user)
+    update_data = {
+        "name": profile.name,
+        "email": profile.email,
+        "age": profile.age,
+        "gender": profile.gender,
+        "role": profile.role,
+        "professional_type": profile.professional_type,
+        "city": profile.city,
+        "state": profile.state,
+        "bio": profile.bio,
+        "sports_interests": profile.sports_interests,
+        "player_position": profile.player_position,
+        "playing_style": profile.playing_style,
+        "certification": profile.certification,
+        "experience_years": profile.experience_years,
+        "children_count": profile.children_count,
+        "onboarding_completed": True,
+        "updated_at": datetime.utcnow()
+    }
     
-    return current_user
+    # Remove None values
+    update_data = {k: v for k, v in update_data.items() if v is not None}
+    
+    await db.users.update_one(
+        {"_id": current_user["_id"]},
+        {"$set": update_data}
+    )
+    
+    # Fetch updated user
+    updated_user = await db.users.find_one({"_id": current_user["_id"]})
+    
+    # Convert ObjectId to string and clean up response
+    return {
+        "id": str(updated_user["_id"]),
+        "phone": updated_user.get("phone"),
+        "name": updated_user.get("name"),
+        "email": updated_user.get("email"),
+        "age": updated_user.get("age"),
+        "gender": updated_user.get("gender"),
+        "role": updated_user.get("role"),
+        "professional_type": updated_user.get("professional_type"),
+        "city": updated_user.get("city"),
+        "state": updated_user.get("state"),
+        "bio": updated_user.get("bio"),
+        "avatar": updated_user.get("avatar"),
+        "sports_interests": updated_user.get("sports_interests", []),
+        "player_position": updated_user.get("player_position"),
+        "playing_style": updated_user.get("playing_style"),
+        "certification": updated_user.get("certification"),
+        "experience_years": updated_user.get("experience_years"),
+        "children_count": updated_user.get("children_count"),
+        "onboarding_completed": updated_user.get("onboarding_completed", False),
+        "is_verified": updated_user.get("is_verified", False),
+        "is_active": updated_user.get("is_active", True),
+        "created_at": updated_user.get("created_at"),
+        "updated_at": updated_user.get("updated_at")
+    }
 
-@router.put("/profile", response_model=UserResponse)
+@router.put("/profile")
 async def update_profile(
     profile: UserProfileUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
     """Update user profile"""
+    db = get_database()
+    
+    # Build update dictionary with only provided fields
+    update_data = {}
     if profile.name is not None:
-        current_user.name = profile.name
+        update_data["name"] = profile.name
     if profile.email is not None:
-        current_user.email = profile.email
+        update_data["email"] = profile.email
     if profile.age is not None:
-        current_user.age = profile.age
+        update_data["age"] = profile.age
     if profile.gender is not None:
-        current_user.gender = profile.gender
+        update_data["gender"] = profile.gender
     if profile.role is not None:
-        current_user.role = profile.role
+        update_data["role"] = profile.role
     if profile.professional_type is not None:
-        current_user.professional_type = profile.professional_type
+        update_data["professional_type"] = profile.professional_type
     if profile.city is not None:
-        current_user.city = profile.city
+        update_data["city"] = profile.city
     if profile.state is not None:
-        current_user.state = profile.state
+        update_data["state"] = profile.state
     if profile.bio is not None:
-        current_user.bio = profile.bio
+        update_data["bio"] = profile.bio
     if profile.avatar is not None:
-        current_user.avatar = profile.avatar
+        update_data["avatar"] = profile.avatar
     if profile.sports_interests is not None:
-        current_user.sports_interests = profile.sports_interests
+        update_data["sports_interests"] = profile.sports_interests
     if profile.player_position is not None:
-        current_user.player_position = profile.player_position
+        update_data["player_position"] = profile.player_position
     if profile.playing_style is not None:
-        current_user.playing_style = profile.playing_style
+        update_data["playing_style"] = profile.playing_style
     if profile.certification is not None:
-        current_user.certification = profile.certification
+        update_data["certification"] = profile.certification
     if profile.experience_years is not None:
-        current_user.experience_years = profile.experience_years
+        update_data["experience_years"] = profile.experience_years
     if profile.children_count is not None:
-        current_user.children_count = profile.children_count
+        update_data["children_count"] = profile.children_count
     if profile.onboarding_completed is not None:
-        current_user.onboarding_completed = profile.onboarding_completed
+        update_data["onboarding_completed"] = profile.onboarding_completed
     
-    await db.flush()
-    await db.refresh(current_user)
+    update_data["updated_at"] = datetime.utcnow()
     
-    return current_user
+    await db.users.update_one(
+        {"_id": current_user["_id"]},
+        {"$set": update_data}
+    )
+    
+    # Fetch updated user
+    updated_user = await db.users.find_one({"_id": current_user["_id"]})
+    
+    # Return clean response
+    return {
+        "id": str(updated_user["_id"]),
+        "phone": updated_user.get("phone"),
+        "name": updated_user.get("name"),
+        "email": updated_user.get("email"),
+        "age": updated_user.get("age"),
+        "gender": updated_user.get("gender"),
+        "role": updated_user.get("role"),
+        "professional_type": updated_user.get("professional_type"),
+        "city": updated_user.get("city"),
+        "state": updated_user.get("state"),
+        "latitude": updated_user.get("latitude"),
+        "longitude": updated_user.get("longitude"),
+        "bio": updated_user.get("bio"),
+        "avatar": updated_user.get("avatar"),
+        "sports_interests": updated_user.get("sports_interests", []),
+        "player_position": updated_user.get("player_position"),
+        "playing_style": updated_user.get("playing_style"),
+        "certification": updated_user.get("certification"),
+        "experience_years": updated_user.get("experience_years"),
+        "children_count": updated_user.get("children_count"),
+        "onboarding_completed": updated_user.get("onboarding_completed", False),
+        "is_verified": updated_user.get("is_verified", False),
+        "is_active": updated_user.get("is_active", True),
+        "created_at": updated_user.get("created_at"),
+        "updated_at": updated_user.get("updated_at")
+    }
 
 @router.put("/location")
 async def update_location(
     location: LocationUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
     """Update user's current location"""
-    current_user.latitude = location.latitude
-    current_user.longitude = location.longitude
+    db = get_database()
     
-    await db.flush()
+    await db.users.update_one(
+        {"_id": current_user["_id"]},
+        {"$set": {
+            "latitude": location.latitude,
+            "longitude": location.longitude,
+            "updated_at": datetime.utcnow()
+        }}
+    )
     
     return {
         "message": "Location updated successfully",
-        "latitude": current_user.latitude,
-        "longitude": current_user.longitude
+        "latitude": location.latitude,
+        "longitude": location.longitude
     }
 
 @router.get("/debug/otp-storage")
 async def debug_otp_storage():
     """Debug endpoint to check OTP storage (REMOVE IN PRODUCTION!)"""
-    from datetime import datetime
     storage_info = {}
     for phone, data in otp_storage.items():
         storage_info[phone] = {
@@ -205,4 +467,3 @@ async def debug_otp_storage():
         "count": len(otp_storage),
         "storage": storage_info
     }
-

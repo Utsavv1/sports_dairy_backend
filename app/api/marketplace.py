@@ -1,333 +1,481 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 from typing import List, Optional
-from app.core.database import get_db
+from datetime import datetime
+from bson import ObjectId
+
+from app.core.database import get_database
 from app.core.security import get_current_user
-from app.models.models import Shop, Job, Dictionary, User
 from app.schemas.schemas import (
     ShopCreate, ShopUpdate, ShopResponse,
     JobCreate, JobUpdate, JobResponse,
     DictionaryCreate, DictionaryUpdate, DictionaryResponse
 )
 
-router = APIRouter(prefix="/marketplace", tags=["marketplace"])
+router = APIRouter(tags=["marketplace"])
 
 
 # ==================== SHOPS ENDPOINTS ====================
 
-@router.get("/shops", response_model=List[ShopResponse])
+@router.get("/shops")
 async def get_shops(
     city: Optional[str] = None,
     category: Optional[str] = None,
     shop_type: Optional[str] = None,
     search: Optional[str] = None,
     skip: int = 0,
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db)
+    limit: int = 50
 ):
     """Get list of sports shops with filters"""
-    query = select(Shop).where(Shop.is_active == True)
+    db = get_database()
+    
+    query = {"is_active": True}
     
     if city:
-        query = query.where(Shop.city == city)
+        query["city"] = city
     if category:
-        query = query.where(Shop.category == category)
+        query["category"] = category
     if shop_type:
-        query = query.where(Shop.shop_type == shop_type)
+        query["shop_type"] = shop_type
     if search:
-        query = query.where(
-            (Shop.name.ilike(f"%{search}%")) |
-            (Shop.description.ilike(f"%{search}%"))
-        )
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"description": {"$regex": search, "$options": "i"}}
+        ]
     
-    # Order by featured first, then by rating
-    query = query.order_by(Shop.is_featured.desc(), Shop.rating.desc())
-    query = query.offset(skip).limit(limit)
+    shops_cursor = db.shops.find(query).skip(skip).limit(limit).sort([("is_featured", -1), ("rating", -1)])
+    shops = await shops_cursor.to_list(length=limit)
     
-    result = await db.execute(query)
-    shops = result.scalars().all()
+    for shop in shops:
+        shop["id"] = str(shop["_id"])
+
+        del shop["_id"]  # Remove ObjectId
+    
     return shops
 
 
-@router.get("/shops/{shop_id}", response_model=ShopResponse)
-async def get_shop(shop_id: int, db: AsyncSession = Depends(get_db)):
+@router.get("/shops/{shop_id}")
+async def get_shop(shop_id: str):
     """Get shop details"""
-    result = await db.execute(select(Shop).where(Shop.id == shop_id))
-    shop = result.scalar_one_or_none()
+    db = get_database()
+    
+    try:
+        shop = await db.shops.find_one({"_id": ObjectId(shop_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid shop ID")
     
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
     
     # Increment enquiry count
-    shop.total_enquiries += 1
-    await db.commit()
+    await db.shops.update_one(
+        {"_id": ObjectId(shop_id)},
+        {"$inc": {"total_enquiries": 1}}
+    )
     
+    shop["id"] = str(shop["_id"])
+
+    
+    del shop["_id"]  # Remove ObjectId
     return shop
 
 
-@router.post("/shops", response_model=ShopResponse)
+@router.post("/shops")
 async def create_shop(
     shop_data: ShopCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
     """Create a new shop listing"""
-    new_shop = Shop(
-        **shop_data.model_dump(),
-        owner_id=current_user.id
-    )
+    db = get_database()
     
-    db.add(new_shop)
-    await db.commit()
-    await db.refresh(new_shop)
-    return new_shop
+    shop_dict = shop_data.dict()
+    shop_dict["owner_id"] = str(current_user["_id"])
+    shop_dict["created_at"] = datetime.utcnow()
+    shop_dict["updated_at"] = datetime.utcnow()
+    shop_dict["is_active"] = True
+    shop_dict["rating"] = 0.0
+    shop_dict["total_reviews"] = 0
+    shop_dict["total_enquiries"] = 0
+    
+    result = await db.shops.insert_one(shop_dict)
+    created_shop = await db.shops.find_one({"_id": result.inserted_id})
+    created_shop["id"] = str(created_shop["_id"])
+
+    del created_shop["_id"]  # Remove ObjectId
+    
+    return created_shop
 
 
-@router.put("/shops/{shop_id}", response_model=ShopResponse)
+@router.put("/shops/{shop_id}")
 async def update_shop(
-    shop_id: int,
+    shop_id: str,
     shop_data: ShopUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
-    """Update shop listing"""
-    result = await db.execute(select(Shop).where(Shop.id == shop_id))
-    shop = result.scalar_one_or_none()
+    """Update shop"""
+    db = get_database()
+    
+    try:
+        shop = await db.shops.find_one({"_id": ObjectId(shop_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid shop ID")
     
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
     
-    if shop.owner_id != current_user.id:
+    # Check ownership
+    if str(shop.get("owner_id")) != str(current_user["_id"]):
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    # Update fields
-    for field, value in shop_data.model_dump(exclude_unset=True).items():
-        setattr(shop, field, value)
+    update_data = {k: v for k, v in shop_data.dict(exclude_unset=True).items() if v is not None}
+    update_data["updated_at"] = datetime.utcnow()
     
-    await db.commit()
-    await db.refresh(shop)
-    return shop
+    await db.shops.update_one(
+        {"_id": ObjectId(shop_id)},
+        {"$set": update_data}
+    )
+    
+    updated_shop = await db.shops.find_one({"_id": ObjectId(shop_id)})
+    updated_shop["id"] = str(updated_shop["_id"])
+
+    del updated_shop["_id"]  # Remove ObjectId
+    
+    return updated_shop
+
+
+@router.delete("/shops/{shop_id}")
+async def delete_shop(
+    shop_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete/deactivate shop"""
+    db = get_database()
+    
+    try:
+        shop = await db.shops.find_one({"_id": ObjectId(shop_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid shop ID")
+    
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    
+    # Check ownership
+    if str(shop.get("owner_id")) != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # Soft delete
+    await db.shops.update_one(
+        {"_id": ObjectId(shop_id)},
+        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
+    )
+    
+    return {"message": "Shop deleted successfully"}
 
 
 # ==================== JOBS ENDPOINTS ====================
 
-@router.get("/jobs", response_model=List[JobResponse])
+@router.get("/jobs")
 async def get_jobs(
     city: Optional[str] = None,
     job_type: Optional[str] = None,
     sport_type: Optional[str] = None,
     employment_type: Optional[str] = None,
+    status: Optional[str] = "active",
     search: Optional[str] = None,
     skip: int = 0,
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db)
+    limit: int = 50
 ):
-    """Get list of sports jobs with filters"""
-    query = select(Job).where(Job.status == "active")
+    """Get list of job postings with filters"""
+    db = get_database()
     
+    query = {}
+    
+    if status:
+        query["status"] = status
     if city:
-        query = query.where(Job.city == city)
+        query["city"] = city
     if job_type:
-        query = query.where(Job.job_type == job_type)
+        query["job_type"] = job_type
     if sport_type:
-        query = query.where(Job.sport_type == sport_type)
+        query["sport_type"] = sport_type
     if employment_type:
-        query = query.where(Job.employment_type == employment_type)
+        query["employment_type"] = employment_type
     if search:
-        query = query.where(
-            (Job.title.ilike(f"%{search}%")) |
-            (Job.description.ilike(f"%{search}%"))
-        )
+        query["$or"] = [
+            {"title": {"$regex": search, "$options": "i"}},
+            {"description": {"$regex": search, "$options": "i"}}
+        ]
     
-    # Order by featured first, then by creation date
-    query = query.order_by(Job.is_featured.desc(), Job.created_at.desc())
-    query = query.offset(skip).limit(limit)
+    jobs_cursor = db.jobs.find(query).skip(skip).limit(limit).sort([("is_featured", -1), ("created_at", -1)])
+    jobs = await jobs_cursor.to_list(length=limit)
     
-    result = await db.execute(query)
-    jobs = result.scalars().all()
+    for job in jobs:
+        job["id"] = str(job["_id"])
+
+        del job["_id"]  # Remove ObjectId
+    
     return jobs
 
 
-@router.get("/jobs/{job_id}", response_model=JobResponse)
-async def get_job(job_id: int, db: AsyncSession = Depends(get_db)):
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: str):
     """Get job details"""
-    result = await db.execute(select(Job).where(Job.id == job_id))
-    job = result.scalar_one_or_none()
+    db = get_database()
+    
+    try:
+        job = await db.jobs.find_one({"_id": ObjectId(job_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid job ID")
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
     # Increment views count
-    job.views_count += 1
-    await db.commit()
+    await db.jobs.update_one(
+        {"_id": ObjectId(job_id)},
+        {"$inc": {"views_count": 1}}
+    )
     
+    job["id"] = str(job["_id"])
+
+    
+    del job["_id"]  # Remove ObjectId
     return job
 
 
-@router.post("/jobs", response_model=JobResponse)
+@router.post("/jobs")
 async def create_job(
     job_data: JobCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
-    """Post a new job"""
-    new_job = Job(
-        **job_data.model_dump(),
-        posted_by=current_user.id
-    )
+    """Create a new job posting"""
+    db = get_database()
     
-    db.add(new_job)
-    await db.commit()
-    await db.refresh(new_job)
-    return new_job
+    job_dict = job_data.dict()
+    job_dict["posted_by"] = str(current_user["_id"])
+    job_dict["created_at"] = datetime.utcnow()
+    job_dict["updated_at"] = datetime.utcnow()
+    job_dict["status"] = "active"
+    job_dict["views_count"] = 0
+    job_dict["applications_count"] = 0
+    
+    result = await db.jobs.insert_one(job_dict)
+    created_job = await db.jobs.find_one({"_id": result.inserted_id})
+    created_job["id"] = str(created_job["_id"])
+
+    del created_job["_id"]  # Remove ObjectId
+    
+    return created_job
 
 
-@router.put("/jobs/{job_id}", response_model=JobResponse)
+@router.put("/jobs/{job_id}")
 async def update_job(
-    job_id: int,
+    job_id: str,
     job_data: JobUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: dict = Depends(get_current_user)
 ):
-    """Update job posting"""
-    result = await db.execute(select(Job).where(Job.id == job_id))
-    job = result.scalar_one_or_none()
+    """Update job"""
+    db = get_database()
+    
+    try:
+        job = await db.jobs.find_one({"_id": ObjectId(job_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid job ID")
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    if job.posted_by != current_user.id:
+    # Check ownership
+    if str(job["posted_by"]) != str(current_user["_id"]):
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    # Update fields
-    for field, value in job_data.model_dump(exclude_unset=True).items():
-        setattr(job, field, value)
+    update_data = {k: v for k, v in job_data.dict(exclude_unset=True).items() if v is not None}
+    update_data["updated_at"] = datetime.utcnow()
     
-    await db.commit()
-    await db.refresh(job)
-    return job
-
-
-# ==================== DICTIONARY ENDPOINTS ====================
-
-@router.get("/dictionary", response_model=List[DictionaryResponse])
-async def get_dictionary_terms(
-    sport: Optional[str] = None,
-    category: Optional[str] = None,
-    difficulty_level: Optional[str] = None,
-    search: Optional[str] = None,
-    skip: int = 0,
-    limit: int = 100,
-    db: AsyncSession = Depends(get_db)
-):
-    """Get sports dictionary terms with filters"""
-    query = select(Dictionary).where(Dictionary.is_active == True)
-    
-    if sport:
-        query = query.where(Dictionary.sport == sport)
-    if category:
-        query = query.where(Dictionary.category == category)
-    if difficulty_level:
-        query = query.where(Dictionary.difficulty_level == difficulty_level)
-    if search:
-        query = query.where(
-            (Dictionary.term.ilike(f"%{search}%")) |
-            (Dictionary.definition.ilike(f"%{search}%"))
-        )
-    
-    # Order by featured first, then alphabetically
-    query = query.order_by(Dictionary.is_featured.desc(), Dictionary.term.asc())
-    query = query.offset(skip).limit(limit)
-    
-    result = await db.execute(query)
-    terms = result.scalars().all()
-    return terms
-
-
-@router.get("/dictionary/{term_id}", response_model=DictionaryResponse)
-async def get_dictionary_term(term_id: int, db: AsyncSession = Depends(get_db)):
-    """Get dictionary term details"""
-    result = await db.execute(select(Dictionary).where(Dictionary.id == term_id))
-    term = result.scalar_one_or_none()
-    
-    if not term:
-        raise HTTPException(status_code=404, detail="Term not found")
-    
-    # Increment views count
-    term.views_count += 1
-    await db.commit()
-    
-    return term
-
-
-@router.get("/dictionary/slug/{slug}", response_model=DictionaryResponse)
-async def get_dictionary_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
-    """Get dictionary term by slug"""
-    result = await db.execute(select(Dictionary).where(Dictionary.slug == slug))
-    term = result.scalar_one_or_none()
-    
-    if not term:
-        raise HTTPException(status_code=404, detail="Term not found")
-    
-    # Increment views count
-    term.views_count += 1
-    await db.commit()
-    
-    return term
-
-
-@router.post("/dictionary", response_model=DictionaryResponse)
-async def create_dictionary_term(
-    term_data: DictionaryCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Create a new dictionary term (admin only)"""
-    # Generate slug from term
-    slug = term_data.term.lower().replace(" ", "-").replace("/", "-")
-    
-    new_term = Dictionary(
-        **term_data.model_dump(),
-        slug=slug
+    await db.jobs.update_one(
+        {"_id": ObjectId(job_id)},
+        {"$set": update_data}
     )
     
-    db.add(new_term)
-    await db.commit()
-    await db.refresh(new_term)
-    return new_term
+    updated_job = await db.jobs.find_one({"_id": ObjectId(job_id)})
+    updated_job["id"] = str(updated_job["_id"])
+
+    del updated_job["_id"]  # Remove ObjectId
+    
+    return updated_job
 
 
-@router.put("/dictionary/{term_id}/helpful")
-async def mark_helpful(
-    term_id: int,
-    db: AsyncSession = Depends(get_db)
+@router.delete("/jobs/{job_id}")
+async def delete_job(
+    job_id: str,
+    current_user: dict = Depends(get_current_user)
 ):
-    """Mark a dictionary term as helpful"""
-    result = await db.execute(select(Dictionary).where(Dictionary.id == term_id))
-    term = result.scalar_one_or_none()
+    """Delete job posting"""
+    db = get_database()
     
-    if not term:
-        raise HTTPException(status_code=404, detail="Term not found")
+    try:
+        job = await db.jobs.find_one({"_id": ObjectId(job_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid job ID")
     
-    term.helpful_count += 1
-    await db.commit()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
     
-    return {"message": "Marked as helpful", "helpful_count": term.helpful_count}
+    # Check ownership
+    if str(job["posted_by"]) != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # Update status to closed
+    await db.jobs.update_one(
+        {"_id": ObjectId(job_id)},
+        {"$set": {"status": "closed", "updated_at": datetime.utcnow()}}
+    )
+    
+    return {"message": "Job posting deleted successfully"}
 
 
-# ==================== STATS ENDPOINTS ====================
+# ==================== DICTIONARY ENDPOINTS (Sports Academy/Terms) ====================
 
-@router.get("/stats")
-async def get_marketplace_stats(db: AsyncSession = Depends(get_db)):
-    """Get marketplace statistics"""
-    shops_count = await db.execute(select(func.count(Shop.id)).where(Shop.is_active == True))
-    jobs_count = await db.execute(select(func.count(Job.id)).where(Job.status == "active"))
-    terms_count = await db.execute(select(func.count(Dictionary.id)).where(Dictionary.is_active == True))
+@router.get("/dictionary")
+async def get_dictionary_entries(
+    sport: Optional[str] = None,
+    category: Optional[str] = None,
+    city: Optional[str] = None,
+    search: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 50
+):
+    """Get dictionary entries (sports terms and academies)"""
+    db = get_database()
     
-    return {
-        "total_shops": shops_count.scalar(),
-        "total_jobs": jobs_count.scalar(),
-        "total_dictionary_terms": terms_count.scalar()
-    }
+    query = {"is_active": True}
+    
+    if sport:
+        query["sport"] = sport
+    if category:
+        query["category"] = category
+    if city:
+        query["city"] = city
+    if search:
+        query["$or"] = [
+            {"term": {"$regex": search, "$options": "i"}},
+            {"definition": {"$regex": search, "$options": "i"}}
+        ]
+    
+    entries_cursor = db.dictionary.find(query).skip(skip).limit(limit).sort([("is_featured", -1), ("views_count", -1)])
+    entries = await entries_cursor.to_list(length=limit)
+    
+    for entry in entries:
+        entry["id"] = str(entry["_id"])
+
+        del entry["_id"]  # Remove ObjectId
+    
+    return entries
+
+
+@router.get("/dictionary/{entry_id}")
+async def get_dictionary_entry(entry_id: str):
+    """Get dictionary entry details"""
+    db = get_database()
+    
+    try:
+        entry = await db.dictionary.find_one({"_id": ObjectId(entry_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid entry ID")
+    
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    
+    # Increment views count
+    await db.dictionary.update_one(
+        {"_id": ObjectId(entry_id)},
+        {"$inc": {"views_count": 1}}
+    )
+    
+    entry["id"] = str(entry["_id"])
+
+    
+    del entry["_id"]  # Remove ObjectId
+    return entry
+
+
+@router.post("/dictionary")
+async def create_dictionary_entry(
+    entry_data: DictionaryCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a new dictionary entry"""
+    db = get_database()
+    
+    entry_dict = entry_data.dict()
+    entry_dict["created_at"] = datetime.utcnow()
+    entry_dict["updated_at"] = datetime.utcnow()
+    entry_dict["is_active"] = True
+    entry_dict["views_count"] = 0
+    entry_dict["helpful_count"] = 0
+    
+    result = await db.dictionary.insert_one(entry_dict)
+    created_entry = await db.dictionary.find_one({"_id": result.inserted_id})
+    created_entry["id"] = str(created_entry["_id"])
+
+    del created_entry["_id"]  # Remove ObjectId
+    
+    return created_entry
+
+
+@router.put("/dictionary/{entry_id}")
+async def update_dictionary_entry(
+    entry_id: str,
+    entry_data: DictionaryUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update dictionary entry"""
+    db = get_database()
+    
+    try:
+        entry = await db.dictionary.find_one({"_id": ObjectId(entry_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid entry ID")
+    
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    
+    update_data = {k: v for k, v in entry_data.dict(exclude_unset=True).items() if v is not None}
+    update_data["updated_at"] = datetime.utcnow()
+    
+    await db.dictionary.update_one(
+        {"_id": ObjectId(entry_id)},
+        {"$set": update_data}
+    )
+    
+    updated_entry = await db.dictionary.find_one({"_id": ObjectId(entry_id)})
+    updated_entry["id"] = str(updated_entry["_id"])
+
+    del updated_entry["_id"]  # Remove ObjectId
+    
+    return updated_entry
+
+
+@router.delete("/dictionary/{entry_id}")
+async def delete_dictionary_entry(
+    entry_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete dictionary entry"""
+    db = get_database()
+    
+    try:
+        entry = await db.dictionary.find_one({"_id": ObjectId(entry_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid entry ID")
+    
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    
+    # Soft delete
+    await db.dictionary.update_one(
+        {"_id": ObjectId(entry_id)},
+        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
+    )
+    
+    return {"message": "Dictionary entry deleted successfully"}
 

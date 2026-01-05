@@ -1,13 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
 from typing import List, Optional
 from datetime import datetime, timedelta
+from bson import ObjectId
 import math
 
-from app.core.database import get_db
+from app.core.database import get_database
 from app.core.security import get_current_user
-from app.models.models import Venue, Booking, VenueReview, VenueSlot, User
 from app.schemas.schemas import (
     VenueCreate, VenueUpdate, VenueResponse,
     BookingCreate, BookingResponse, SplitPaymentRequest,
@@ -16,414 +14,420 @@ from app.schemas.schemas import (
 
 router = APIRouter()
 
-@router.get("/venues", response_model=List[VenueResponse])
+def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate distance between two coordinates in kilometers using Haversine formula"""
+    R = 6371  # Earth's radius in kilometers
+    
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    
+    a = (math.sin(dlat / 2) ** 2 + 
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * 
+         math.sin(dlon / 2) ** 2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    
+    return R * c
+
+@router.get("")
 async def get_venues(
     city: Optional[str] = None,
     sport: Optional[str] = None,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
     min_rating: Optional[float] = None,
-    amenities: Optional[str] = Query(None),  # Comma-separated: "Parking,Cafeteria"
+    amenities: Optional[str] = Query(None),
     indoor_outdoor: Optional[str] = None,
     latitude: Optional[float] = None,
     longitude: Optional[float] = None,
     radius_km: Optional[float] = 10.0,
     search: Optional[str] = None,
     skip: int = 0,
-    limit: int = 50,
-    db: AsyncSession = Depends(get_db)
+    limit: int = 50
 ):
     """
-    Smart Search & Filter Venues (B1 & B2)
+    Smart Search & Filter Venues
     - Search by sport, location, price range
     - Filter by amenities, rating, indoor/outdoor
     - Nearby search using lat/long
     """
-    query = select(Venue).where(Venue.is_active == True)
+    db = get_database()
+    
+    # Build MongoDB query
+    query = {"is_active": True}
     
     # City filter
     if city:
-        query = query.where(Venue.city == city)
+        query["city"] = city
     
     # Sport filter
     if sport:
-        query = query.where(Venue.sports_available.contains([sport]))
+        query["sports_available"] = sport
     
     # Price range filter
     if min_price:
-        query = query.where(Venue.price_per_hour >= min_price)
+        query["price_per_hour"] = query.get("price_per_hour", {})
+        query["price_per_hour"]["$gte"] = min_price
     if max_price:
-        query = query.where(Venue.price_per_hour <= max_price)
+        query["price_per_hour"] = query.get("price_per_hour", {})
+        query["price_per_hour"]["$lte"] = max_price
     
     # Rating filter
     if min_rating:
-        query = query.where(Venue.rating >= min_rating)
+        query["rating"] = {"$gte": min_rating}
     
     # Amenities filter
     if amenities:
-        amenity_list = amenities.split(',')
-        for amenity in amenity_list:
-            query = query.where(Venue.amenities.contains([amenity.strip()]))
+        amenity_list = [a.strip() for a in amenities.split(',')]
+        query["amenities"] = {"$all": amenity_list}
     
     # Indoor/Outdoor filter
     if indoor_outdoor:
-        query = query.where(Venue.indoor_outdoor == indoor_outdoor)
+        query["indoor_outdoor"] = indoor_outdoor
     
     # Search by name, description, landmark
     if search:
-        search_term = f"%{search}%"
-        query = query.where(
-            or_(
-                Venue.name.ilike(search_term),
-                Venue.description.ilike(search_term),
-                Venue.landmark.ilike(search_term)
-            )
-        )
+        query["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"description": {"$regex": search, "$options": "i"}},
+            {"landmark": {"$regex": search, "$options": "i"}}
+        ]
     
-    # Nearby search (B3 - Map Integration prep)
+    # Nearby search
     if latitude and longitude:
-        # Haversine distance calculation
-        # Filter venues within radius
-        query = query.where(
-            and_(
-                Venue.latitude.isnot(None),
-                Venue.longitude.isnot(None)
-            )
-        )
+        query["latitude"] = {"$ne": None}
+        query["longitude"] = {"$ne": None}
     
-    # Pagination
-    query = query.offset(skip).limit(limit)
+    # Execute query
+    venues_cursor = db.venues.find(query).skip(skip).limit(limit)
+    venues = await venues_cursor.to_list(length=limit)
     
-    result = await db.execute(query)
-    venues = result.scalars().all()
-    
-    # If nearby search, calculate and sort by distance
-    if latitude and longitude and venues:
-        venues_with_distance = []
+    # Calculate distance if coordinates provided
+    if latitude and longitude:
         for venue in venues:
-            if venue.latitude and venue.longitude:
-                # Haversine formula
-                lat1, lon1 = math.radians(latitude), math.radians(longitude)
-                lat2, lon2 = math.radians(venue.latitude), math.radians(venue.longitude)
-                
-                dlat = lat2 - lat1
-                dlon = lon2 - lon1
-                
-                a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-                c = 2 * math.asin(math.sqrt(a))
-                distance = 6371 * c  # Earth radius in km
-                
-                if distance <= radius_km:
-                    venues_with_distance.append((venue, distance))
+            if venue.get("latitude") and venue.get("longitude"):
+                distance = calculate_distance(
+                    latitude, longitude,
+                    venue["latitude"], venue["longitude"]
+                )
+                venue["distance_km"] = round(distance, 2)
+            else:
+                venue["distance_km"] = None
+        
+        # Filter by radius
+        venues = [v for v in venues if v.get("distance_km") is not None and v["distance_km"] <= radius_km]
         
         # Sort by distance
-        venues_with_distance.sort(key=lambda x: x[1])
-        venues = [v[0] for v in venues_with_distance]
+        venues.sort(key=lambda x: x.get("distance_km", float('inf')))
+    
+    # Convert ObjectId to string
+    for venue in venues:
+        venue["id"] = str(venue["_id"])
+        del venue["_id"]  # Remove ObjectId
     
     return venues
 
-
-@router.get("/venues/{venue_id}", response_model=VenueResponse)
-async def get_venue(venue_id: int, db: AsyncSession = Depends(get_db)):
-    """Get detailed venue information"""
-    result = await db.execute(select(Venue).where(Venue.id == venue_id))
-    venue = result.scalar_one_or_none()
+@router.get("/{venue_id}")
+async def get_venue(venue_id: str):
+    """Get venue by ID"""
+    db = get_database()
+    
+    try:
+        venue = await db.venues.find_one({"_id": ObjectId(venue_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid venue ID")
     
     if not venue:
         raise HTTPException(status_code=404, detail="Venue not found")
     
+    venue["id"] = str(venue["_id"])
+    del venue["_id"]  # Remove ObjectId
     return venue
 
-
-@router.get("/venues/{venue_id}/slots")
-async def get_venue_slots(
-    venue_id: int,
-    date: str,  # Format: "2025-01-15"
-    db: AsyncSession = Depends(get_db)
+@router.post("")
+async def create_venue(
+    venue: VenueCreate,
+    current_user: dict = Depends(get_current_user)
 ):
-    """
-    Real-Time Slot Availability (B4)
-    Returns available and booked slots for a specific date
-    """
-    # Get venue
-    venue_result = await db.execute(select(Venue).where(Venue.id == venue_id))
-    venue = venue_result.scalar_one_or_none()
+    """Create new venue"""
+    db = get_database()
+    
+    venue_data = venue.dict()
+    venue_data["owner_id"] = str(current_user["_id"])
+    venue_data["created_at"] = datetime.utcnow()
+    venue_data["updated_at"] = datetime.utcnow()
+    venue_data["is_active"] = True
+    venue_data["rating"] = 0.0
+    venue_data["total_reviews"] = 0
+    venue_data["total_bookings"] = 0
+    
+    result = await db.venues.insert_one(venue_data)
+    created_venue = await db.venues.find_one({"_id": result.inserted_id})
+    created_venue["id"] = str(created_venue["_id"])
+
+    del created_venue["_id"]  # Remove ObjectId
+    
+    return created_venue
+
+@router.put("/{venue_id}")
+async def update_venue(
+    venue_id: str,
+    venue: VenueUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update venue"""
+    db = get_database()
+    
+    try:
+        existing_venue = await db.venues.find_one({"_id": ObjectId(venue_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid venue ID")
+    
+    if not existing_venue:
+        raise HTTPException(status_code=404, detail="Venue not found")
+    
+    # Check ownership
+    if str(existing_venue.get("owner_id")) != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    update_data = {k: v for k, v in venue.dict(exclude_unset=True).items() if v is not None}
+    update_data["updated_at"] = datetime.utcnow()
+    
+    await db.venues.update_one(
+        {"_id": ObjectId(venue_id)},
+        {"$set": update_data}
+    )
+    
+    updated_venue = await db.venues.find_one({"_id": ObjectId(venue_id)})
+    updated_venue["id"] = str(updated_venue["_id"])
+
+    del updated_venue["_id"]  # Remove ObjectId
+    
+    return updated_venue
+
+@router.delete("/{venue_id}")
+async def delete_venue(
+    venue_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete/deactivate venue"""
+    db = get_database()
+    
+    try:
+        venue = await db.venues.find_one({"_id": ObjectId(venue_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid venue ID")
     
     if not venue:
         raise HTTPException(status_code=404, detail="Venue not found")
     
-    # Generate time slots based on operating hours
-    opening = venue.opening_time  # "06:00"
-    closing = venue.closing_time  # "23:00"
+    # Check ownership
+    if str(venue.get("owner_id")) != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
     
-    # Parse hours
-    open_hour = int(opening.split(':')[0])
-    close_hour = int(closing.split(':')[0])
+    # Soft delete
+    await db.venues.update_one(
+        {"_id": ObjectId(venue_id)},
+        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
+    )
     
-    # Generate hourly slots
-    slots = []
-    for hour in range(open_hour, close_hour):
-        start_time = f"{hour:02d}:00"
-        end_time = f"{hour+1:02d}:00"
-        
-        # Check if slot is booked
-        booking_result = await db.execute(
-            select(Booking).where(
-                and_(
-                    Booking.venue_id == venue_id,
-                    Booking.booking_date == date,
-                    Booking.start_time == start_time,
-                    Booking.status.in_(["confirmed", "pending"])
-                )
-            )
-        )
-        booking = booking_result.scalar_one_or_none()
-        
-        # Determine price (peak hours, weekends)
-        slot_price = venue.price_per_hour
-        hour_num = hour
-        
-        # Peak hours (6 PM - 10 PM)
-        if 18 <= hour_num < 22 and venue.peak_hour_price:
-            slot_price = venue.peak_hour_price
-        
-        # Weekend pricing
-        from datetime import datetime
-        date_obj = datetime.strptime(date, "%Y-%m-%d")
-        if date_obj.weekday() >= 5 and venue.weekend_price:  # Saturday = 5, Sunday = 6
-            slot_price = venue.weekend_price
-        
-        slots.append({
-            "start_time": start_time,
-            "end_time": end_time,
-            "is_available": booking is None,
-            "price": slot_price,
-            "booking_id": booking.id if booking else None
-        })
-    
-    return {
-        "venue_id": venue_id,
-        "date": date,
-        "slots": slots
-    }
+    return {"message": "Venue deleted successfully"}
 
-
-@router.post("/bookings", response_model=BookingResponse)
+# Bookings endpoints
+@router.post("/bookings")
 async def create_booking(
-    booking_data: BookingCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    booking: BookingCreate,
+    current_user: dict = Depends(get_current_user)
 ):
-    """
-    Create a new booking (B4)
-    """
+    """Create venue booking"""
+    db = get_database()
+    
     # Verify venue exists
-    venue_result = await db.execute(
-        select(Venue).where(Venue.id == booking_data.venue_id)
-    )
-    venue = venue_result.scalar_one_or_none()
+    try:
+        venue = await db.venues.find_one({"_id": ObjectId(booking.venue_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid venue ID")
     
     if not venue:
         raise HTTPException(status_code=404, detail="Venue not found")
-    
-    # Check slot availability
-    existing_booking = await db.execute(
-        select(Booking).where(
-            and_(
-                Booking.venue_id == booking_data.venue_id,
-                Booking.booking_date == booking_data.booking_date,
-                Booking.start_time == booking_data.start_time,
-                Booking.status.in_(["confirmed", "pending"])
-            )
-        )
-    )
-    
-    if existing_booking.scalar_one_or_none():
-        raise HTTPException(
-            status_code=400,
-            detail="This slot is already booked"
-        )
-    
-    # Calculate duration and price
-    start_hour = int(booking_data.start_time.split(':')[0])
-    end_hour = int(booking_data.end_time.split(':')[0])
-    duration = end_hour - start_hour
-    
-    # Dynamic pricing
-    base_price = venue.price_per_hour * duration
-    
-    # Apply peak hour pricing if applicable
-    date_obj = datetime.strptime(booking_data.booking_date, "%Y-%m-%d")
-    if date_obj.weekday() >= 5 and venue.weekend_price:
-        base_price = venue.weekend_price * duration
     
     # Generate booking number
-    import random
-    booking_number = f"BK-{datetime.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+    booking_count = await db.bookings.count_documents({})
+    booking_number = f"BK-{datetime.now().strftime('%Y%m%d')}-{booking_count + 1:04d}"
     
-    # Create booking
-    new_booking = Booking(
-        booking_number=booking_number,
-        user_id=current_user.id,
-        venue_id=booking_data.venue_id,
-        sport_type=booking_data.sport_type,
-        booking_date=booking_data.booking_date,
-        start_time=booking_data.start_time,
-        end_time=booking_data.end_time,
-        duration_hours=duration,
-        player_count=booking_data.player_count,
-        team_name=booking_data.team_name,
-        contact_person=booking_data.contact_person,
-        contact_number=booking_data.contact_number,
-        special_requests=booking_data.special_requests,
-        base_price=base_price,
-        total_amount=base_price,
-        status="confirmed",
-        payment_status="pending"
-    )
+    booking_data = booking.dict()
+    booking_data["user_id"] = str(current_user["_id"])
+    booking_data["booking_number"] = booking_number
+    booking_data["created_at"] = datetime.utcnow()
+    booking_data["updated_at"] = datetime.utcnow()
+    booking_data["status"] = "confirmed"
+    booking_data["payment_status"] = "pending"
     
-    db.add(new_booking)
+    result = await db.bookings.insert_one(booking_data)
     
     # Update venue booking count
-    venue.total_bookings += 1
-    
-    await db.flush()
-    await db.refresh(new_booking)
-    
-    return new_booking
-
-
-@router.post("/bookings/{booking_id}/split-pay")
-async def create_split_payment(
-    booking_id: int,
-    split_data: SplitPaymentRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Split Pay Feature (B5)
-    Generate payment links for splitting costs among friends
-    """
-    # Get booking
-    result = await db.execute(
-        select(Booking).where(Booking.id == booking_id)
+    await db.venues.update_one(
+        {"_id": ObjectId(booking.venue_id)},
+        {"$inc": {"total_bookings": 1}}
     )
-    booking = result.scalar_one_or_none()
+    
+    created_booking = await db.bookings.find_one({"_id": result.inserted_id})
+    created_booking["id"] = str(created_booking["_id"])
+
+    del created_booking["_id"]  # Remove ObjectId
+    
+    return created_booking
+
+@router.get("/bookings")
+async def get_user_bookings(
+    current_user: dict = Depends(get_current_user),
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 50
+):
+    """Get user's bookings"""
+    db = get_database()
+    
+    query = {"user_id": str(current_user["_id"])}
+    
+    if status:
+        query["status"] = status
+    
+    bookings_cursor = db.bookings.find(query).skip(skip).limit(limit).sort("created_at", -1)
+    bookings = await bookings_cursor.to_list(length=limit)
+    
+    for booking in bookings:
+        booking["id"] = str(booking["_id"])
+
+        del booking["_id"]  # Remove ObjectId
+    
+    return bookings
+
+@router.get("/bookings/{booking_id}")
+async def get_booking(
+    booking_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get booking by ID"""
+    db = get_database()
+    
+    try:
+        booking = await db.bookings.find_one({"_id": ObjectId(booking_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid booking ID")
     
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
     
-    if booking.user_id != current_user.id:
+    # Check if user owns this booking or owns the venue
+    venue = await db.venues.find_one({"_id": ObjectId(booking["venue_id"])})
+    
+    if (str(booking["user_id"]) != str(current_user["_id"]) and 
+        (not venue or str(venue.get("owner_id")) != str(current_user["_id"]))):
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    # Calculate split amounts
-    total_participants = len(split_data.participants)
-    amount_per_person = booking.total_amount / (total_participants + 1)  # +1 for booker
-    
-    # Generate payment links for each participant
-    split_payment_details = []
-    for participant in split_data.participants:
-        payment_link = f"https://app.sportsdiary.com/pay/{booking.booking_number}/{participant.get('phone', 'unknown')}"
-        split_payment_details.append({
-            "name": participant.get('name'),
-            "phone": participant.get('phone'),
-            "amount": participant.get('amount', amount_per_person),
-            "payment_link": payment_link,
-            "status": "pending"
-        })
-    
-    # Update booking
-    booking.is_split_payment = True
-    booking.split_payment_data = split_payment_details
-    booking.split_payment_link = f"https://app.sportsdiary.com/pay/{booking.booking_number}"
-    
-    await db.flush()
-    await db.refresh(booking)
-    
-    return {
-        "booking_id": booking_id,
-        "split_payment_enabled": True,
-        "total_amount": booking.total_amount,
-        "amount_per_person": amount_per_person,
-        "participants": split_payment_details,
-        "payment_link": booking.split_payment_link
-    }
+    booking["id"] = str(booking["_id"])
 
+    
+    del booking["_id"]  # Remove ObjectId
+    return booking
 
-@router.get("/bookings/my-bookings", response_model=List[BookingResponse])
-async def get_my_bookings(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+@router.post("/bookings/{booking_id}/cancel")
+async def cancel_booking(
+    booking_id: str,
+    current_user: dict = Depends(get_current_user),
+    reason: Optional[str] = None
 ):
-    """Get all bookings for current user"""
-    result = await db.execute(
-        select(Booking).where(Booking.user_id == current_user.id).order_by(Booking.created_at.desc())
+    """Cancel booking"""
+    db = get_database()
+    
+    try:
+        booking = await db.bookings.find_one({"_id": ObjectId(booking_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid booking ID")
+    
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    
+    if str(booking["user_id"]) != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    await db.bookings.update_one(
+        {"_id": ObjectId(booking_id)},
+        {"$set": {
+            "status": "cancelled",
+            "cancellation_reason": reason,
+            "cancelled_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }}
     )
-    bookings = result.scalars().all()
-    return bookings
+    
+    return {"message": "Booking cancelled successfully"}
 
-
-@router.post("/venues/{venue_id}/reviews", response_model=ReviewResponse)
+# Reviews endpoints
+@router.post("/{venue_id}/reviews")
 async def create_review(
-    venue_id: int,
-    review_data: ReviewCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    venue_id: str,
+    review: ReviewCreate,
+    current_user: dict = Depends(get_current_user)
 ):
-    """Submit a venue review"""
-    # Check if venue exists
-    venue_result = await db.execute(select(Venue).where(Venue.id == venue_id))
-    venue = venue_result.scalar_one_or_none()
+    """Create venue review"""
+    db = get_database()
+    
+    try:
+        venue = await db.venues.find_one({"_id": ObjectId(venue_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid venue ID")
     
     if not venue:
         raise HTTPException(status_code=404, detail="Venue not found")
     
-    # Create review
-    new_review = VenueReview(
-        venue_id=venue_id,
-        user_id=current_user.id,
-        booking_id=review_data.booking_id,
-        rating=review_data.rating,
-        review_text=review_data.review_text,
-        cleanliness_rating=review_data.cleanliness_rating,
-        facilities_rating=review_data.facilities_rating,
-        staff_rating=review_data.staff_rating,
-        value_rating=review_data.value_rating
-    )
+    review_data = review.dict()
+    review_data["venue_id"] = venue_id
+    review_data["user_id"] = str(current_user["_id"])
+    review_data["created_at"] = datetime.utcnow()
+    review_data["updated_at"] = datetime.utcnow()
+    review_data["is_verified"] = False
+    review_data["helpful_count"] = 0
     
-    db.add(new_review)
+    result = await db.venue_reviews.insert_one(review_data)
     
     # Update venue rating
-    review_result = await db.execute(
-        select(func.avg(VenueReview.rating), func.count(VenueReview.id))
-        .where(VenueReview.venue_id == venue_id)
-    )
-    avg_rating, review_count = review_result.one()
+    reviews_cursor = db.venue_reviews.find({"venue_id": venue_id})
+    reviews = await reviews_cursor.to_list(length=None)
     
-    venue.rating = float(avg_rating) if avg_rating else 0.0
-    venue.total_reviews = review_count + 1
+    if reviews:
+        avg_rating = sum(r["rating"] for r in reviews) / len(reviews)
+        await db.venues.update_one(
+            {"_id": ObjectId(venue_id)},
+            {"$set": {
+                "rating": round(avg_rating, 2),
+                "total_reviews": len(reviews)
+            }}
+        )
     
-    await db.flush()
-    await db.refresh(new_review)
-    
-    return new_review
+    created_review = await db.venue_reviews.find_one({"_id": result.inserted_id})
+    created_review["id"] = str(created_review["_id"])
 
+    del created_review["_id"]  # Remove ObjectId
+    
+    return created_review
 
-@router.get("/venues/{venue_id}/reviews", response_model=List[ReviewResponse])
+@router.get("/{venue_id}/reviews")
 async def get_venue_reviews(
-    venue_id: int,
+    venue_id: str,
     skip: int = 0,
-    limit: int = 20,
-    db: AsyncSession = Depends(get_db)
+    limit: int = 20
 ):
-    """Get all reviews for a venue"""
-    result = await db.execute(
-        select(VenueReview)
-        .where(VenueReview.venue_id == venue_id)
-        .order_by(VenueReview.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-    )
-    reviews = result.scalars().all()
+    """Get venue reviews"""
+    db = get_database()
+    
+    reviews_cursor = db.venue_reviews.find({"venue_id": venue_id}).skip(skip).limit(limit).sort("created_at", -1)
+    reviews = await reviews_cursor.to_list(length=limit)
+    
+    for review in reviews:
+        review["id"] = str(review["_id"])
+
+        del review["_id"]  # Remove ObjectId
+    
     return reviews
 
