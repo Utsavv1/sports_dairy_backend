@@ -51,11 +51,13 @@ async def shutdown():
     await close_mongo_connection()
 
 # Health check endpoint
+@app.get("/api/health")
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "sports-diary-api", "database": "mongodb"}
 
 # Root endpoint
+@app.get("/api")
 @app.get("/")
 async def root():
     return {
