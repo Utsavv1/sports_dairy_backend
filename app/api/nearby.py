@@ -46,6 +46,9 @@ async def get_nearby_venues(
         if sport_type:
             query["sports_available"] = sport_type
         
+        # Get total count before limiting
+        total_count = await db.venues.count_documents(query)
+        
         venues_cursor = db.venues.find(query).limit(limit)
         venues = await venues_cursor.to_list(length=limit)
         
@@ -53,7 +56,7 @@ async def get_nearby_venues(
             venue["id"] = str(venue["_id"])
             del venue["_id"]  # Remove ObjectId
         
-        return {"venues": venues, "using_location": False}
+        return {"venues": venues, "using_location": False, "count": total_count}
     
     # Get all active venues with coordinates
     query = {
@@ -111,6 +114,9 @@ async def get_nearby_tournaments(
         if sport_type:
             query["sport_type"] = sport_type
         
+        # Get total count before limiting
+        total_count = await db.tournaments.count_documents(query)
+        
         tournaments_cursor = db.tournaments.find(query).limit(limit)
         tournaments = await tournaments_cursor.to_list(length=limit)
         
@@ -118,7 +124,7 @@ async def get_nearby_tournaments(
             tournament["id"] = str(tournament["_id"])
             del tournament["_id"]  # Remove ObjectId
         
-        return {"tournaments": tournaments, "using_location": False}
+        return {"tournaments": tournaments, "using_location": False, "count": total_count}
     
     query = {
         "is_active": True,
@@ -174,6 +180,9 @@ async def get_nearby_shops(
         if category:
             query["category"] = category
         
+        # Get total count before limiting
+        total_count = await db.shops.count_documents(query)
+        
         shops_cursor = db.shops.find(query).limit(limit)
         shops = await shops_cursor.to_list(length=limit)
         
@@ -181,7 +190,7 @@ async def get_nearby_shops(
             shop["id"] = str(shop["_id"])
             del shop["_id"]  # Remove ObjectId
         
-        return {"shops": shops, "using_location": False}
+        return {"shops": shops, "using_location": False, "count": total_count}
     
     query = {
         "is_active": True,
@@ -236,6 +245,9 @@ async def get_nearby_jobs(
         if job_type:
             query["job_type"] = job_type
         
+        # Get total count before limiting
+        total_count = await db.jobs.count_documents(query)
+        
         jobs_cursor = db.jobs.find(query).limit(limit)
         jobs = await jobs_cursor.to_list(length=limit)
         
@@ -243,7 +255,7 @@ async def get_nearby_jobs(
             job["id"] = str(job["_id"])
             del job["_id"]  # Remove ObjectId
         
-        return {"jobs": jobs, "using_location": False}
+        return {"jobs": jobs, "using_location": False, "count": total_count}
     
     query = {"status": "active"}
     
@@ -299,6 +311,9 @@ async def get_nearby_academies(
         if sport:
             query["sport"] = sport
         
+        # Get total count before limiting
+        total_count = await db.dictionary.count_documents(query)
+        
         academies_cursor = db.dictionary.find(query).limit(limit)
         academies = await academies_cursor.to_list(length=limit)
         
@@ -306,7 +321,7 @@ async def get_nearby_academies(
             academy["id"] = str(academy["_id"])
             del academy["_id"]  # Remove ObjectId
         
-        return {"academies": academies, "using_location": False}
+        return {"academies": academies, "using_location": False, "count": total_count}
     
     query = {
         "is_active": True,
@@ -336,7 +351,7 @@ async def get_nearby_academies(
         "academies": academies_with_distance[:limit],
         "using_location": True,
         "user_location": {"latitude": user_lat, "longitude": user_lon},
-        "count": len(academies_with_distance)
+        "count": len(academies_with_distance[:limit])
     }
 
 

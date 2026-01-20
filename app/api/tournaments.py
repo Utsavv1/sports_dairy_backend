@@ -48,15 +48,17 @@ async def get_tournaments(
             {"description": {"$regex": search, "$options": "i"}}
         ]
     
+    # Get total count before limiting
+    total_count = await db.tournaments.count_documents(query)
+    
     tournaments_cursor = db.tournaments.find(query).skip(skip).limit(limit).sort([("is_featured", -1), ("start_date", 1)])
     tournaments = await tournaments_cursor.to_list(length=limit)
     
     for tournament in tournaments:
         tournament["id"] = str(tournament["_id"])
-
         del tournament["_id"]  # Remove ObjectId
     
-    return tournaments
+    return {"tournaments": tournaments, "count": total_count}
 
 
 @router.get("/{tournament_id}")
@@ -110,11 +112,36 @@ async def create_tournament(
     tournament_data: TournamentCreate,
     current_user: dict = Depends(get_current_user)
 ):
-    """Create new tournament"""
+    """Create new tournament (organizers and their managers)"""
     db = get_database()
     
+    user_id = str(current_user["_id"])
+    organizer_id = user_id
+    created_by_manager = False
+    
+    # Check if user is organizer or manager with permission
+    if current_user.get("role") != "organizer":
+        # Check if user is a manager
+        manager = await db.organizer_managers.find_one({
+            "manager_user_id": user_id,
+            "is_active": True
+        })
+        
+        if not manager:
+            raise HTTPException(status_code=403, detail="Only organizers or their managers can create tournaments")
+        
+        # Check permission
+        permissions = manager.get("permissions", [])
+        if "create_tournament" not in permissions:
+            raise HTTPException(status_code=403, detail="You don't have permission to create tournaments")
+        
+        organizer_id = str(manager["organizer_id"])
+        created_by_manager = True
+    
     tournament_dict = tournament_data.dict()
-    tournament_dict["organizer_id"] = str(current_user["_id"])
+    tournament_dict["organizer_id"] = organizer_id
+    tournament_dict["created_by"] = user_id
+    tournament_dict["created_by_manager"] = created_by_manager
     tournament_dict["created_at"] = datetime.utcnow()
     tournament_dict["updated_at"] = datetime.utcnow()
     tournament_dict["current_teams"] = 0
@@ -137,7 +164,7 @@ async def update_tournament(
     tournament_data: TournamentUpdate,
     current_user: dict = Depends(get_current_user)
 ):
-    """Update tournament"""
+    """Update tournament (organizers and their managers)"""
     db = get_database()
     
     try:
@@ -148,9 +175,27 @@ async def update_tournament(
     if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
     
-    # Check if user is organizer
-    if str(tournament["organizer_id"]) != str(current_user["_id"]):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    user_id = str(current_user["_id"])
+    
+    # Check if user is the organizer
+    if str(tournament["organizer_id"]) == user_id:
+        # Organizer has full access
+        pass
+    else:
+        # Check if user is a manager with permission
+        manager = await db.organizer_managers.find_one({
+            "manager_user_id": user_id,
+            "organizer_id": str(tournament["organizer_id"]),
+            "is_active": True
+        })
+        
+        if not manager:
+            raise HTTPException(status_code=403, detail="Not authorized to edit this tournament")
+        
+        # Check permission
+        permissions = manager.get("permissions", [])
+        if "edit_tournament" not in permissions:
+            raise HTTPException(status_code=403, detail="You don't have permission to edit tournaments")
     
     update_data = {k: v for k, v in tournament_data.dict(exclude_unset=True).items() if v is not None}
     update_data["updated_at"] = datetime.utcnow()
@@ -173,7 +218,7 @@ async def delete_tournament(
     tournament_id: str,
     current_user: dict = Depends(get_current_user)
 ):
-    """Delete/deactivate tournament"""
+    """Delete/deactivate tournament (organizers and their managers)"""
     db = get_database()
     
     try:
@@ -184,9 +229,27 @@ async def delete_tournament(
     if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
     
-    # Check if user is organizer
-    if str(tournament["organizer_id"]) != str(current_user["_id"]):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    user_id = str(current_user["_id"])
+    
+    # Check if user is the organizer
+    if str(tournament["organizer_id"]) == user_id:
+        # Organizer has full access
+        pass
+    else:
+        # Check if user is a manager with permission
+        manager = await db.organizer_managers.find_one({
+            "manager_user_id": user_id,
+            "organizer_id": str(tournament["organizer_id"]),
+            "is_active": True
+        })
+        
+        if not manager:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this tournament")
+        
+        # Check permission
+        permissions = manager.get("permissions", [])
+        if "edit_tournament" not in permissions:  # Using edit permission for delete
+            raise HTTPException(status_code=403, detail="You don't have permission to delete tournaments")
     
     # Soft delete
     await db.tournaments.update_one(

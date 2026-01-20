@@ -1,65 +1,94 @@
 import asyncio
-from sqlalchemy import select
-from app.core.database import AsyncSessionLocal
-from app.models.models import User, Job, Shop, Dictionary, Tournament, Venue
+import sys
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Set encoding
+sys.stdout.reconfigure(encoding='utf-8')
 
 async def check_all_tables():
-    async with AsyncSessionLocal() as db:
+    """Check all collections in MongoDB database"""
+    try:
+        # Get MongoDB connection string
+        mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+        database_name = os.getenv("DATABASE_NAME", "sports_diary")
+        
+        # Connect to MongoDB
+        client = AsyncIOMotorClient(mongodb_url)
+        db = client[database_name]
+        
+        # Test connection
+        await client.admin.command('ping')
+        
         print("\n" + "="*70)
         print("DATABASE STATUS CHECK - SPORTS DIARY")
         print("="*70)
         
         # Users
-        result = await db.execute(select(User))
-        users = result.scalars().all()
+        users = await db.users.find().to_list(length=None)
         print(f"\nUSERS: {len(users)} total")
         for i, user in enumerate(users[:3], 1):
-            print(f"   {i}. {user.name} ({user.phone}) - {user.city or 'No city'}")
+            name = user.get('name', 'N/A')
+            phone = user.get('phone', 'N/A')
+            city = user.get('city', 'No city')
+            print(f"   {i}. {name} ({phone}) - {city}")
         if len(users) > 3:
             print(f"   ... and {len(users) - 3} more")
         
         # Jobs
-        result = await db.execute(select(Job))
-        jobs = result.scalars().all()
+        jobs = await db.jobs.find().to_list(length=None)
         print(f"\nJOBS: {len(jobs)} total")
         for i, job in enumerate(jobs[:3], 1):
-            print(f"   {i}. {job.title} ({job.job_type}) - {job.city}")
+            title = job.get('title', 'N/A')
+            job_type = job.get('job_type', 'N/A')
+            city = job.get('city', 'N/A')
+            print(f"   {i}. {title} ({job_type}) - {city}")
         if len(jobs) > 3:
             print(f"   ... and {len(jobs) - 3} more")
         
         # Venues
-        result = await db.execute(select(Venue))
-        venues = result.scalars().all()
+        venues = await db.venues.find().to_list(length=None)
         print(f"\nVENUES: {len(venues)} total")
         for i, venue in enumerate(venues[:3], 1):
-            print(f"   {i}. {venue.name} - {venue.city}")
+            name = venue.get('name', 'N/A')
+            city = venue.get('city', 'N/A')
+            print(f"   {i}. {name} - {city}")
         if len(venues) > 3:
             print(f"   ... and {len(venues) - 3} more")
         
         # Tournaments
-        result = await db.execute(select(Tournament))
-        tournaments = result.scalars().all()
+        tournaments = await db.tournaments.find().to_list(length=None)
         print(f"\nTOURNAMENTS: {len(tournaments)} total")
         for i, tournament in enumerate(tournaments[:3], 1):
-            print(f"   {i}. {tournament.name} ({tournament.sport_type}) - {tournament.city}")
+            name = tournament.get('name', 'N/A')
+            sport_type = tournament.get('sport_type', 'N/A')
+            city = tournament.get('city', 'N/A')
+            print(f"   {i}. {name} ({sport_type}) - {city}")
         if len(tournaments) > 3:
             print(f"   ... and {len(tournaments) - 3} more")
         
         # Shops
-        result = await db.execute(select(Shop))
-        shops = result.scalars().all()
+        shops = await db.shops.find().to_list(length=None)
         print(f"\nSHOPS: {len(shops)} total")
         for i, shop in enumerate(shops[:3], 1):
-            print(f"   {i}. {shop.name} ({shop.shop_type}) - {shop.city}")
+            name = shop.get('name', 'N/A')
+            shop_type = shop.get('shop_type', shop.get('category', 'N/A'))
+            city = shop.get('city', 'N/A')
+            print(f"   {i}. {name} ({shop_type}) - {city}")
         if len(shops) > 3:
             print(f"   ... and {len(shops) - 3} more")
         
         # Dictionary/Academy
-        result = await db.execute(select(Dictionary))
-        academies = result.scalars().all()
+        academies = await db.dictionary.find().to_list(length=None)
         print(f"\nACADEMIES: {len(academies)} total")
         for i, academy in enumerate(academies[:3], 1):
-            print(f"   {i}. {academy.term} ({academy.sport})")
+            term = academy.get('term', 'N/A')
+            sport = academy.get('sport', 'N/A')
+            print(f"   {i}. {term} ({sport})")
         if len(academies) > 3:
             print(f"   ... and {len(academies) - 3} more")
         
@@ -83,9 +112,16 @@ async def check_all_tables():
         else:
             print(f"\nSTATUS: Database is empty - run seed scripts!")
         
-        print(f"\nDatabase location: backend/player_app.db")
+        print(f"\nDatabase: MongoDB ({database_name})")
         print("="*70 + "\n")
+        
+        # Close connection
+        client.close()
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     asyncio.run(check_all_tables())
-

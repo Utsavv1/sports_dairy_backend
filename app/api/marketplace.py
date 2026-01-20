@@ -42,15 +42,17 @@ async def get_shops(
             {"description": {"$regex": search, "$options": "i"}}
         ]
     
+    # Get total count before limiting
+    total_count = await db.shops.count_documents(query)
+    
     shops_cursor = db.shops.find(query).skip(skip).limit(limit).sort([("is_featured", -1), ("rating", -1)])
     shops = await shops_cursor.to_list(length=limit)
     
     for shop in shops:
         shop["id"] = str(shop["_id"])
-
         del shop["_id"]  # Remove ObjectId
     
-    return shops
+    return {"shops": shops, "count": total_count}
 
 
 @router.get("/shops/{shop_id}")
@@ -205,15 +207,17 @@ async def get_jobs(
             {"description": {"$regex": search, "$options": "i"}}
         ]
     
+    # Get total count before limiting
+    total_count = await db.jobs.count_documents(query)
+    
     jobs_cursor = db.jobs.find(query).skip(skip).limit(limit).sort([("is_featured", -1), ("created_at", -1)])
     jobs = await jobs_cursor.to_list(length=limit)
     
     for job in jobs:
         job["id"] = str(job["_id"])
-
         del job["_id"]  # Remove ObjectId
     
-    return jobs
+    return {"jobs": jobs, "count": total_count}
 
 
 @router.get("/jobs/{job_id}")
@@ -361,15 +365,17 @@ async def get_dictionary_entries(
             {"definition": {"$regex": search, "$options": "i"}}
         ]
     
+    # Get total count before limiting
+    total_count = await db.dictionary.count_documents(query)
+    
     entries_cursor = db.dictionary.find(query).skip(skip).limit(limit).sort([("is_featured", -1), ("views_count", -1)])
     entries = await entries_cursor.to_list(length=limit)
     
     for entry in entries:
         entry["id"] = str(entry["_id"])
-
         del entry["_id"]  # Remove ObjectId
     
-    return entries
+    return {"academies": entries, "count": total_count}
 
 
 @router.get("/dictionary/{entry_id}")

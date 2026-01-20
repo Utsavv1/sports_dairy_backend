@@ -1,65 +1,83 @@
 import asyncio
-from sqlalchemy import select, func
-from app.core.database import AsyncSessionLocal
-from app.models.models import Venue, Tournament, Shop, Dictionary, Job
+import sys
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Set encoding
+sys.stdout.reconfigure(encoding='utf-8')
 
 async def check_database():
-    """Check all data in database"""
-    async with AsyncSessionLocal() as db:
+    """Check all data in MongoDB database"""
+    try:
+        # Get MongoDB connection string
+        mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+        database_name = os.getenv("DATABASE_NAME", "sports_diary")
+        
+        # Connect to MongoDB
+        client = AsyncIOMotorClient(mongodb_url)
+        db = client[database_name]
+        
+        # Test connection
+        await client.admin.command('ping')
+        
         print("\n" + "="*50)
         print("DATABASE CONTENT CHECK")
         print("="*50 + "\n")
         
         # Count venues
-        result = await db.execute(select(func.count()).select_from(Venue))
-        venue_count = result.scalar()
+        venue_count = await db.venues.count_documents({})
         print(f"[OK] Venues: {venue_count}")
         
         # Count tournaments
-        result = await db.execute(select(func.count()).select_from(Tournament))
-        tournament_count = result.scalar()
+        tournament_count = await db.tournaments.count_documents({})
         print(f"[OK] Tournaments: {tournament_count}")
         
         # Count shops
-        result = await db.execute(select(func.count()).select_from(Shop))
-        shop_count = result.scalar()
+        shop_count = await db.shops.count_documents({})
         print(f"[OK] Shops: {shop_count}")
         
         # Count academies (dictionary)
-        result = await db.execute(select(func.count()).select_from(Dictionary))
-        academy_count = result.scalar()
+        academy_count = await db.dictionary.count_documents({})
         print(f"[OK] Academies: {academy_count}")
         
         # Count jobs
-        result = await db.execute(select(func.count()).select_from(Job))
-        job_count = result.scalar()
+        job_count = await db.jobs.count_documents({})
         print(f"[OK] Jobs: {job_count}")
         
         print("\n" + "-"*50)
-        print(f"TOTAL RECORDS: {venue_count + tournament_count + shop_count + academy_count + job_count}")
+        total = venue_count + tournament_count + shop_count + academy_count + job_count
+        print(f"TOTAL RECORDS: {total}")
         print("-"*50 + "\n")
         
         # Show some sample data
         print("SAMPLE VENUES:")
-        result = await db.execute(select(Venue).limit(3))
-        venues = result.scalars().all()
+        venues = await db.venues.find().limit(3).to_list(length=3)
         for v in venues:
-            print(f"  - {v.name} ({v.city})")
+            print(f"  - {v.get('name', 'N/A')} ({v.get('city', 'N/A')})")
         
         print("\nSAMPLE TOURNAMENTS:")
-        result = await db.execute(select(Tournament).limit(3))
-        tournaments = result.scalars().all()
+        tournaments = await db.tournaments.find().limit(3).to_list(length=3)
         for t in tournaments:
-            print(f"  - {t.name} ({t.city})")
+            print(f"  - {t.get('name', 'N/A')} ({t.get('city', 'N/A')})")
         
         print("\nSAMPLE SHOPS:")
-        result = await db.execute(select(Shop).limit(3))
-        shops = result.scalars().all()
+        shops = await db.shops.find().limit(3).to_list(length=3)
         for s in shops:
-            print(f"  - {s.name} ({s.city})")
+            print(f"  - {s.get('name', 'N/A')} ({s.get('city', 'N/A')})")
         
         print("\n" + "="*50 + "\n")
+        
+        # Close connection
+        client.close()
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     asyncio.run(check_database())
-

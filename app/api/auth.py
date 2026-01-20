@@ -20,23 +20,40 @@ router = APIRouter()
 @router.post("/send-otp")
 async def send_otp(request: OTPRequest):
     """Send OTP to phone number"""
+    # Validate phone format
+    if not request.phone.startswith("+91") or len(request.phone) != 13:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid phone number format. Use +91XXXXXXXXXX"
+        )
+    
     otp = generate_otp()
     store_otp(request.phone, otp)
     
-    # In production, send OTP via SMS service (Twilio, etc.)
-    # For development, we return the OTP
+    # Log OTP to console for debugging
     print(f"[AUTH] OTP sent for {request.phone}: {otp}")
+    
+    # Return OTP in response (for development/testing)
     return {
-        "message": "OTP sent successfully",
+        "message": "OTP sent successfully to your phone number",
         "phone": request.phone,
-        "otp": otp  # Remove this in production!
+        "otp": otp,  # Show OTP on screen
+        "expires_in_minutes": settings.OTP_EXPIRE_MINUTES
     }
 
 @router.post("/verify-otp", response_model=Token)
 async def verify_otp_endpoint(request: OTPVerify):
     """Verify OTP and return access token"""
-    print(f"[AUTH] Verifying OTP for phone: {request.phone}, OTP: {request.otp}")
+    print(f"[AUTH] Verifying OTP for phone: {request.phone}")
     
+    # Validate OTP format
+    if not request.otp.isdigit() or len(request.otp) != 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OTP must be 6 digits"
+        )
+    
+    # Verify OTP (this will raise HTTPException if rate limited)
     if not verify_otp(request.phone, request.otp):
         print(f"[AUTH] OTP verification FAILED for {request.phone}")
         raise HTTPException(
@@ -82,6 +99,8 @@ async def verify_otp_endpoint(request: OTPVerify):
     
     # Convert MongoDB _id to string
     user_data["id"] = str(user_data["_id"])
+    
+    print(f"[AUTH] User authenticated: {request.phone}")
     
     return {
         "access_token": access_token,
@@ -453,17 +472,9 @@ async def update_location(
         "longitude": location.longitude
     }
 
-@router.get("/debug/otp-storage")
-async def debug_otp_storage():
-    """Debug endpoint to check OTP storage (REMOVE IN PRODUCTION!)"""
-    storage_info = {}
-    for phone, data in otp_storage.items():
-        storage_info[phone] = {
-            "otp": data["otp"],
-            "expires_at": data["expires_at"].isoformat(),
-            "is_expired": datetime.utcnow() > data["expires_at"]
-        }
+@router.post("/logout")
+async def logout(current_user: dict = Depends(get_current_user)):
+    """Logout endpoint - client should clear token from localStorage"""
     return {
-        "count": len(otp_storage),
-        "storage": storage_info
+        "message": "Logged out successfully. Please clear your token from localStorage."
     }
