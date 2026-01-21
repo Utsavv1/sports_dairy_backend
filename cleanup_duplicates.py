@@ -1,35 +1,49 @@
 import asyncio
-from sqlalchemy import select, func, delete
-from app.core.database import AsyncSessionLocal
-from app.models.models import Venue, Tournament, Shop, Dictionary, Job
+import sys
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Set encoding
+sys.stdout.reconfigure(encoding='utf-8')
 
 async def cleanup_duplicates():
-    """Remove duplicate entries from database"""
-    async with AsyncSessionLocal() as db:
+    """Remove duplicate entries from MongoDB database"""
+    try:
+        # Get MongoDB connection string
+        mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+        database_name = os.getenv("DATABASE_NAME", "sports_diary")
+        
+        # Connect to MongoDB
+        client = AsyncIOMotorClient(mongodb_url)
+        db = client[database_name]
+        
+        # Test connection
+        await client.admin.command('ping')
+        print("✅ Connected to MongoDB\n")
+        
         print("\n" + "="*50)
         print("CLEANING UP DUPLICATE DATA")
         print("="*50 + "\n")
         
         # Check current counts
         print("BEFORE CLEANUP:")
-        result = await db.execute(select(func.count()).select_from(Venue))
-        venue_count = result.scalar()
+        venue_count = await db.venues.count_documents({})
         print(f"  Venues: {venue_count}")
         
-        result = await db.execute(select(func.count()).select_from(Tournament))
-        tournament_count = result.scalar()
+        tournament_count = await db.tournaments.count_documents({})
         print(f"  Tournaments: {tournament_count}")
         
-        result = await db.execute(select(func.count()).select_from(Shop))
-        shop_count = result.scalar()
+        shop_count = await db.shops.count_documents({})
         print(f"  Shops: {shop_count}")
         
-        result = await db.execute(select(func.count()).select_from(Dictionary))
-        academy_count = result.scalar()
+        academy_count = await db.dictionary.count_documents({})
         print(f"  Academies: {academy_count}")
         
-        result = await db.execute(select(func.count()).select_from(Job))
-        job_count = result.scalar()
+        job_count = await db.jobs.count_documents({})
         print(f"  Jobs: {job_count}")
         
         print("\n" + "-"*50)
@@ -37,30 +51,29 @@ async def cleanup_duplicates():
         print("-"*50 + "\n")
         
         # Get all venues and keep only first occurrence of each name
-        result = await db.execute(select(Venue))
-        all_venues = result.scalars().all()
+        all_venues = await db.venues.find().to_list(length=None)
         
         seen_names = {}
         duplicates_to_delete = []
         
         for venue in all_venues:
-            if venue.name in seen_names:
+            venue_name = venue.get('name', '')
+            venue_id = venue.get('_id')
+            
+            if venue_name in seen_names:
                 # This is a duplicate, mark for deletion
-                duplicates_to_delete.append(venue.id)
-                print(f"  [DUPLICATE] {venue.name} (ID: {venue.id})")
+                duplicates_to_delete.append(venue_id)
+                print(f"  [DUPLICATE] {venue_name} (ID: {venue_id})")
             else:
                 # First occurrence, keep it
-                seen_names[venue.name] = venue.id
-                print(f"  [KEEP] {venue.name} (ID: {venue.id})")
+                seen_names[venue_name] = venue_id
+                print(f"  [KEEP] {venue_name} (ID: {venue_id})")
         
         # Delete duplicates
         if duplicates_to_delete:
             print(f"\nDeleting {len(duplicates_to_delete)} duplicate venues...")
-            await db.execute(
-                delete(Venue).where(Venue.id.in_(duplicates_to_delete))
-            )
-            await db.commit()
-            print("[OK] Duplicates removed!")
+            result = await db.venues.delete_many({"_id": {"$in": duplicates_to_delete}})
+            print(f"[OK] {result.deleted_count} duplicates removed!")
         else:
             print("\n[OK] No duplicates found!")
         
@@ -69,24 +82,19 @@ async def cleanup_duplicates():
         print("AFTER CLEANUP:")
         print("-"*50 + "\n")
         
-        result = await db.execute(select(func.count()).select_from(Venue))
-        venue_count_after = result.scalar()
+        venue_count_after = await db.venues.count_documents({})
         print(f"  Venues: {venue_count_after}")
         
-        result = await db.execute(select(func.count()).select_from(Tournament))
-        tournament_count_after = result.scalar()
+        tournament_count_after = await db.tournaments.count_documents({})
         print(f"  Tournaments: {tournament_count_after}")
         
-        result = await db.execute(select(func.count()).select_from(Shop))
-        shop_count_after = result.scalar()
+        shop_count_after = await db.shops.count_documents({})
         print(f"  Shops: {shop_count_after}")
         
-        result = await db.execute(select(func.count()).select_from(Dictionary))
-        academy_count_after = result.scalar()
+        academy_count_after = await db.dictionary.count_documents({})
         print(f"  Academies: {academy_count_after}")
         
-        result = await db.execute(select(func.count()).select_from(Job))
-        job_count_after = result.scalar()
+        job_count_after = await db.jobs.count_documents({})
         print(f"  Jobs: {job_count_after}")
         
         total = venue_count_after + tournament_count_after + shop_count_after + academy_count_after + job_count_after
@@ -98,7 +106,14 @@ async def cleanup_duplicates():
         print("="*50)
         print("CLEANUP COMPLETE!")
         print("="*50 + "\n")
+        
+        # Close connection
+        client.close()
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     asyncio.run(cleanup_duplicates())
-

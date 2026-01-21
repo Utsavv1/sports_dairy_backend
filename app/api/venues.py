@@ -97,6 +97,9 @@ async def get_venues(
         query["latitude"] = {"$ne": None}
         query["longitude"] = {"$ne": None}
     
+    # Get total count before limiting
+    total_count = await db.venues.count_documents(query)
+    
     # Execute query
     venues_cursor = db.venues.find(query).skip(skip).limit(limit)
     venues = await venues_cursor.to_list(length=limit)
@@ -124,7 +127,7 @@ async def get_venues(
         venue["id"] = str(venue["_id"])
         del venue["_id"]  # Remove ObjectId
     
-    return venues
+    return {"venues": venues, "count": total_count}
 
 @router.get("/{venue_id}")
 async def get_venue(venue_id: str):

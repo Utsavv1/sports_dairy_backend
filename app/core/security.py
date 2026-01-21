@@ -6,58 +6,84 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import random
 import string
+import hashlib
+import hmac
+from cryptography.fernet import Fernet
 
 from app.core.config import settings
 from app.core.database import get_database
 
 security = HTTPBearer()
 
-# In-memory OTP storage (use Redis in production)
+# In-memory OTP storage with rate limiting (use Redis in production)
 otp_storage = {}
+otp_attempts = {}  # Track failed attempts for rate limiting
 
 def generate_otp(length: int = 6) -> str:
     """Generate a random 6-digit OTP"""
     return ''.join(random.choices(string.digits, k=length))
 
+def hash_otp(otp: str, phone: str) -> str:
+    """Hash OTP with phone number for secure storage"""
+    return hashlib.sha256(f"{otp}{phone}{settings.OTP_SECRET_KEY}".encode()).hexdigest()
+
 def store_otp(phone: str, otp: str):
-    """Store OTP with expiration time"""
+    """Store OTP with expiration time and hashing"""
+    otp_hash = hash_otp(otp, phone)
     otp_storage[phone] = {
-        "otp": otp,
-        "expires_at": datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
+        "otp_hash": otp_hash,
+        "expires_at": datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES),
+        "attempts": 0,
+        "created_at": datetime.utcnow()
     }
-    print(f"[OTP] Stored OTP for {phone}: {otp}")
+    # Reset attempts counter
+    otp_attempts[phone] = {"failed_attempts": 0, "last_attempt": None}
+    print(f"[OTP] Stored OTP for {phone} (hashed)")
 
 def verify_otp(phone: str, otp: str) -> bool:
-    """Verify OTP"""
-    print(f"[OTP] Verifying OTP for {phone}: {otp}")
-    print(f"[OTP] Current storage keys: {list(otp_storage.keys())}")
+    """Verify OTP with rate limiting and security checks"""
+    print(f"[OTP] Verifying OTP for {phone}")
     
-    # DEVELOPMENT MODE: Accept any 6-digit OTP for testing
-    # TODO: Remove this in production!
-    if len(otp) == 6 and otp.isdigit():
-        print(f"[OTP] DEVELOPMENT MODE: Accepting OTP for testing")
-        # Clean up storage for this phone if exists
-        if phone in otp_storage:
-            del otp_storage[phone]
-        return True
+    # Check rate limiting
+    if phone in otp_attempts:
+        failed_attempts = otp_attempts[phone]["failed_attempts"]
+        if failed_attempts >= settings.OTP_MAX_ATTEMPTS:
+            print(f"[OTP] Rate limit exceeded for {phone}")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed attempts. Please try again later."
+            )
     
     if phone not in otp_storage:
-        print(f"[OTP] Phone not found in storage. Available phones: {list(otp_storage.keys())}")
+        print(f"[OTP] Phone not found in storage")
         return False
     
     stored = otp_storage[phone]
     
+    # Check expiration
     if datetime.utcnow() > stored["expires_at"]:
         print(f"[OTP] OTP expired")
         del otp_storage[phone]
+        if phone in otp_attempts:
+            del otp_attempts[phone]
         return False
     
-    if stored["otp"] != otp:
-        print(f"[OTP] OTP mismatch. Expected: {stored['otp']}, Got: {otp}")
+    # Verify OTP hash
+    provided_hash = hash_otp(otp, phone)
+    if not hmac.compare_digest(provided_hash, stored["otp_hash"]):
+        print(f"[OTP] OTP mismatch")
+        # Increment failed attempts
+        if phone not in otp_attempts:
+            otp_attempts[phone] = {"failed_attempts": 0, "last_attempt": None}
+        otp_attempts[phone]["failed_attempts"] += 1
+        otp_attempts[phone]["last_attempt"] = datetime.utcnow()
         return False
     
     print(f"[OTP] OTP verified successfully!")
+    # Clean up
     del otp_storage[phone]
+    if phone in otp_attempts:
+        del otp_attempts[phone]
     return True
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

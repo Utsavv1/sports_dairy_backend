@@ -456,6 +456,50 @@ class TeamResponse(TeamBase):
     class Config:
         from_attributes = True
 
+# Organizer Team/Manager Schemas
+class OrganizerManagerCreate(BaseModel):
+    name: str
+    phone: str
+    email: Optional[EmailStr] = None
+    role_description: Optional[str] = None  # e.g., "Assistant Manager", "Tournament Coordinator"
+    permissions: Optional[List[str]] = None  # ["create_tournament", "edit_tournament", "manage_registrations"]
+    # Full profile fields (organizer creates complete profile)
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = "Gujarat"
+    bio: Optional[str] = None
+    sports_interests: Optional[List[str]] = None
+
+class OrganizerManagerAddExisting(BaseModel):
+    user_id: str  # ID of existing user to add as manager
+    role_description: Optional[str] = None
+    permissions: List[str] = ["create_tournament", "edit_tournament", "view_registrations"]
+
+class OrganizerManagerUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    role_description: Optional[str] = None
+    permissions: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+
+class OrganizerManagerResponse(BaseModel):
+    id: str
+    organizer_id: str
+    manager_user_id: Optional[str]  # If manager has created an account
+    name: str
+    phone: str
+    email: Optional[str]
+    role_description: Optional[str]
+    permissions: List[str]
+    is_active: bool
+    is_verified: bool
+    created_at: datetime
+    last_active: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
 # Tournament Registration Schemas
 class TournamentRegistrationCreate(BaseModel):
     tournament_id: int
@@ -490,3 +534,110 @@ class TournamentRegistrationResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+# Professional Availability Schemas
+class ProfessionalAvailabilityCreate(BaseModel):
+    sport_type: str
+    available_from_date: datetime
+    available_to_date: Optional[datetime] = None
+    available_days: Optional[List[str]] = None  # ["Monday", "Tuesday", etc.]
+    available_time_slots: Optional[List[dict]] = None  # [{"start": "18:00", "end": "22:00"}]
+    per_match_fee: float
+    match_types: Optional[List[str]] = None
+    can_play: bool = True
+    can_coach: bool = False
+    can_umpire: bool = False
+    min_notice_hours: int = 24
+    max_bookings_per_week: Optional[int] = None
+
+class ProfessionalAvailabilityUpdate(BaseModel):
+    available_from_date: Optional[datetime] = None
+    available_to_date: Optional[datetime] = None
+    available_days: Optional[List[str]] = None
+    available_time_slots: Optional[List[dict]] = None
+    per_match_fee: Optional[float] = None
+    match_types: Optional[List[str]] = None
+    can_play: Optional[bool] = None
+    can_coach: Optional[bool] = None
+    can_umpire: Optional[bool] = None
+    min_notice_hours: Optional[int] = None
+    max_bookings_per_week: Optional[int] = None
+    is_active: Optional[bool] = None
+
+class ProfessionalAvailabilityResponse(BaseModel):
+    id: str
+    professional_id: str
+    professional_name: str
+    professional_type: str
+    sport_type: str
+    city: str
+    state: str
+    available_from_date: datetime
+    available_to_date: Optional[datetime]
+    available_days: Optional[List[str]]
+    available_time_slots: Optional[List[dict]]
+    per_match_fee: float
+    currency: str
+    match_types: Optional[List[str]]
+    can_play: bool
+    can_coach: bool
+    can_umpire: bool
+    min_notice_hours: int
+    max_bookings_per_week: Optional[int]
+    rating: float
+    total_bookings: int
+    total_reviews: int
+    is_active: bool
+    is_verified: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Professional Booking Schemas
+class ProfessionalBookingCreate(BaseModel):
+    professional_id: str
+    tournament_id: Optional[str] = None
+    match_id: Optional[str] = None
+    match_date: datetime
+    match_start_time: str
+    match_end_time: str
+    sport_type: str
+    match_type: str
+    location: str
+    venue_address: Optional[str] = None
+    role: str  # Player, Coach, Umpire, Trainer
+    special_requests: Optional[str] = None
+    contact_number: Optional[str] = None
+    contact_email: Optional[str] = None
+
+class ProfessionalBookingUpdate(BaseModel):
+    status: Optional[str] = None
+    payment_status: Optional[str] = None
+    cancellation_reason: Optional[str] = None
+
+class ProfessionalBookingResponse(BaseModel):
+    id: str
+    booking_number: str
+    professional_id: str
+    booked_by: str
+    tournament_id: Optional[str]
+    match_id: Optional[str]
+    booking_date: datetime
+    match_date: datetime
+    match_start_time: str
+    match_end_time: str
+    sport_type: str
+    match_type: str
+    location: str
+    role: str
+    per_match_fee: float
+    total_amount: float
+    currency: str
+    payment_status: str
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

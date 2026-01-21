@@ -1,11 +1,16 @@
 import asyncio
 import sys
+import os
 from datetime import datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # MongoDB connection
-MONGODB_URL = "mongodb://localhost:27017"
-DATABASE_NAME = "sports_diary"
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "sports_diary")
 
 async def clear_database(db):
     """Clear all collections"""

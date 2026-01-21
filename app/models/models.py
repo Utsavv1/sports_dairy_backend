@@ -556,3 +556,97 @@ class TournamentRegistration(MongoBaseModel):
     # Notes
     special_requests: Optional[str] = None
     admin_notes: Optional[str] = None
+
+
+# Professional Availability Model
+class ProfessionalAvailability(MongoBaseModel):
+    professional_id: str = Field(..., index=True)
+    
+    # Professional Details
+    professional_name: str
+    professional_type: str  # Coach, Umpire, Trainer, etc.
+    sport_type: str
+    
+    # Location
+    city: str = Field(..., index=True)
+    state: str = "Gujarat"
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    
+    # Availability Details
+    available_from_date: datetime
+    available_to_date: Optional[datetime] = None
+    
+    # Time Slots (recurring weekly availability)
+    available_days: Optional[List[str]] = []  # ["Monday", "Tuesday", etc.]
+    available_time_slots: Optional[List[dict]] = []  # [{"start": "18:00", "end": "22:00"}, ...]
+    
+    # Pricing
+    per_match_fee: float
+    currency: str = "INR"
+    
+    # Match Details
+    match_types: Optional[List[str]] = []  # ["Tournament", "Friendly", "Practice", "Coaching"]
+    can_play: bool = True  # Can this professional also play in matches
+    can_coach: bool = False  # Can provide coaching
+    can_umpire: bool = False  # Can umpire matches
+    
+    # Booking Info
+    min_notice_hours: int = 24  # Minimum hours notice required
+    max_bookings_per_week: Optional[int] = None
+    
+    # Ratings & Reviews
+    rating: float = 0.0
+    total_bookings: int = 0
+    total_reviews: int = 0
+    
+    # Status
+    is_active: bool = True
+    is_verified: bool = False
+
+
+# Professional Booking Model
+class ProfessionalBooking(MongoBaseModel):
+    booking_number: str = Field(..., index=True)
+    
+    # Relationships
+    professional_id: str
+    booked_by: str  # User who booked
+    tournament_id: Optional[str] = None
+    match_id: Optional[str] = None
+    
+    # Booking Details
+    booking_date: datetime
+    match_date: datetime
+    match_start_time: str
+    match_end_time: str
+    
+    # Match Info
+    sport_type: str
+    match_type: str  # Tournament, Friendly, Practice, Coaching
+    location: str
+    venue_address: Optional[str] = None
+    
+    # Professional Role
+    role: str  # Player, Coach, Umpire, Trainer
+    
+    # Pricing
+    per_match_fee: float
+    total_amount: float
+    currency: str = "INR"
+    
+    # Payment
+    payment_status: str = "pending"
+    payment_method: Optional[str] = None
+    payment_date: Optional[datetime] = None
+    transaction_id: Optional[str] = None
+    
+    # Status
+    status: str = "confirmed"  # confirmed, cancelled, completed
+    cancellation_reason: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
+    
+    # Notes
+    special_requests: Optional[str] = None
+    contact_number: Optional[str] = None
+    contact_email: Optional[str] = None

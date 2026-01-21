@@ -27,8 +27,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY . .
 
-# Create directory for database (if using SQLite)
-RUN mkdir -p /app/data
+# Create directory for uploads
+RUN mkdir -p /app/uploads /app/uploads/community
 
 # Expose port
 EXPOSE 8000

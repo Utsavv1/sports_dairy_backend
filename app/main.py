@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.api import auth, tournaments, venues, marketplace, nearby, reviews, community
+from app.api import auth, tournaments, venues, marketplace, nearby, reviews, community, professionals, organizer_team
 from app.core.database import connect_to_mongo, close_mongo_connection
 import os
 
@@ -75,6 +75,8 @@ app.include_router(marketplace.router, prefix="/api/marketplace", tags=["Marketp
 app.include_router(nearby.router, prefix="/api/nearby", tags=["Nearby"])
 app.include_router(reviews.router, prefix="/api/reviews", tags=["Reviews"])
 app.include_router(community.router, prefix="/api/community", tags=["Community"])
+app.include_router(professionals.router, prefix="/api/professionals", tags=["Professionals"])
+app.include_router(organizer_team.router, prefix="/api/organizer-team", tags=["Organizer Team"])
 
 # Mount static files for uploads
 if not os.path.exists("uploads"):
