@@ -241,6 +241,21 @@ async def create_booking(
     if not availability.get("is_active"):
         raise HTTPException(status_code=400, detail="Professional is not available")
     
+    # Check for duplicate umpire booking in same tournament
+    if booking_data.tournament_id and booking_data.role == "Umpire":
+        existing_booking = await db.professional_bookings.find_one({
+            "tournament_id": booking_data.tournament_id,
+            "professional_id": booking_data.professional_id,
+            "role": "Umpire",
+            "status": {"$in": ["confirmed", "accepted"]}
+        })
+        
+        if existing_booking:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"This umpire is already booked for this tournament. Booking ID: {existing_booking.get('booking_number', 'N/A')}"
+            )
+    
     # Generate booking number
     booking_number = f"PROF-{uuid.uuid4().hex[:8].upper()}"
     
@@ -298,6 +313,32 @@ async def get_my_bookings(
         del booking["_id"]
     
     return bookings
+
+
+@router.get("/bookings/check-duplicate/{tournament_id}/{professional_id}")
+async def check_duplicate_umpire(
+    tournament_id: str,
+    professional_id: str,
+    role: str = "Umpire"
+):
+    """Check if an umpire is already booked for a tournament"""
+    db = get_database()
+    
+    try:
+        existing_booking = await db.professional_bookings.find_one({
+            "tournament_id": tournament_id,
+            "professional_id": professional_id,
+            "role": role,
+            "status": {"$in": ["confirmed", "accepted"]}
+        })
+        
+        return {
+            "is_booked": existing_booking is not None,
+            "booking_number": existing_booking.get("booking_number") if existing_booking else None,
+            "message": f"This {role.lower()} is already booked for this tournament" if existing_booking else None
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/bookings/{booking_id}")
