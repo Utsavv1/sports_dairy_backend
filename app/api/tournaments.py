@@ -293,18 +293,26 @@ async def get_user_teams(
     skip: int = 0,
     limit: int = 50
 ):
-    """Get user's teams"""
+    """Get user's teams (teams where user is captain)"""
     db = get_database()
     
-    teams_cursor = db.teams.find({"captain_id": str(current_user["_id"])}).skip(skip).limit(limit)
-    teams = await teams_cursor.to_list(length=limit)
-    
-    for team in teams:
-        team["id"] = str(team["_id"])
-
-        del team["_id"]  # Remove ObjectId
-    
-    return teams
+    try:
+        user_id = str(current_user["_id"])
+        
+        # Find teams where user is captain
+        teams_cursor = db.teams.find({"captain_id": user_id}).skip(skip).limit(limit)
+        teams = await teams_cursor.to_list(length=limit)
+        
+        for team in teams:
+            team["id"] = str(team["_id"])
+            del team["_id"]
+        
+        print(f"[TOURNAMENTS] Found {len(teams)} teams for user {user_id}")
+        return teams
+    except Exception as e:
+        print(f"[TOURNAMENTS] Error fetching teams: {e}")
+        # Return empty list if there's any error
+        return []
 
 
 @router.get("/teams/{team_id}")

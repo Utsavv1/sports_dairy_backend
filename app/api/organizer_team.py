@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from bson import ObjectId
 import random
+from pydantic import BaseModel
 
 from app.core.database import get_database
 from app.core.security import get_current_user
@@ -12,6 +13,248 @@ from app.schemas.schemas import (
 )
 
 router = APIRouter(tags=["organizer_team"])
+
+
+# ==================== REQUEST MODELS ====================
+
+class SendInvitationRequest(BaseModel):
+    user_id: str
+    permissions: List[str]
+    role_description: str = "Team Member"
+
+
+# ==================== TEAM INVITATION ENDPOINTS ====================
+
+@router.post("/invitations/send")
+async def send_team_invitation(
+    request: SendInvitationRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Send invitation to user to join organizer's team"""
+    db = get_database()
+    
+    user_id = request.user_id
+    permissions = request.permissions
+    role_description = request.role_description
+    
+    # Check if current user is organizer
+    if current_user.get("role") != "organizer":
+        raise HTTPException(status_code=403, detail="Only organizers can send invitations")
+    
+    # Check if target user exists
+    try:
+        target_user = await db.users.find_one({"_id": ObjectId(user_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+    
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Can't invite yourself
+    if user_id == str(current_user["_id"]):
+        raise HTTPException(status_code=400, detail="Cannot invite yourself")
+    
+    # Check if user is already in team
+    existing_manager = await db.organizer_managers.find_one({
+        "organizer_id": str(current_user["_id"]),
+        "manager_user_id": user_id,
+        "is_active": True
+    })
+    
+    if existing_manager:
+        raise HTTPException(status_code=400, detail="This user is already in your team")
+    
+    # Check if invitation already exists and is pending
+    existing_invitation = await db.team_invitations.find_one({
+        "organizer_id": str(current_user["_id"]),
+        "user_id": user_id,
+        "status": "pending"
+    })
+    
+    if existing_invitation:
+        raise HTTPException(status_code=400, detail="Invitation already sent to this user")
+    
+    # Ensure edit_tournament is always included
+    permissions_to_send = list(set([*permissions, "edit_tournament"]))
+    
+    # Create invitation
+    invitation = {
+        "organizer_id": str(current_user["_id"]),
+        "organizer_name": current_user.get("name", "Organizer"),
+        "user_id": user_id,
+        "user_name": target_user.get("name"),
+        "user_phone": target_user.get("phone"),
+        "role_description": role_description,
+        "permissions": permissions_to_send,
+        "status": "pending",  # pending, accepted, rejected
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+        "expires_at": datetime.utcnow() + timedelta(days=7)  # Invitation expires in 7 days
+    }
+    
+    result = await db.team_invitations.insert_one(invitation)
+    created_invitation = await db.team_invitations.find_one({"_id": result.inserted_id})
+    created_invitation["id"] = str(created_invitation["_id"])
+    del created_invitation["_id"]
+    
+    print(f"[TEAM_INVITATION] Invitation sent:")
+    print(f"  - From: {current_user.get('name')} ({current_user.get('phone')})")
+    print(f"  - To: {target_user.get('name')} ({target_user.get('phone')})")
+    print(f"  - Permissions: {permissions_to_send}")
+    
+    return created_invitation
+
+
+@router.get("/invitations/pending")
+async def get_pending_invitations(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all pending invitations for current user"""
+    db = get_database()
+    
+    # Find all pending invitations for this user
+    invitations_cursor = db.team_invitations.find({
+        "user_id": str(current_user["_id"]),
+        "status": "pending",
+        "expires_at": {"$gt": datetime.utcnow()}  # Not expired
+    }).sort([("created_at", -1)])
+    
+    invitations = await invitations_cursor.to_list(length=100)
+    
+    for invitation in invitations:
+        invitation["id"] = str(invitation["_id"])
+        del invitation["_id"]
+    
+    return invitations
+
+
+@router.post("/invitations/{invitation_id}/accept")
+async def accept_team_invitation(
+    invitation_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Accept team invitation"""
+    db = get_database()
+    
+    try:
+        invitation = await db.team_invitations.find_one({"_id": ObjectId(invitation_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid invitation ID")
+    
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    
+    # Check if invitation is for current user
+    if invitation["user_id"] != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="This invitation is not for you")
+    
+    # Check if invitation is still pending
+    if invitation["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Invitation already {invitation['status']}")
+    
+    # Check if invitation has expired
+    if invitation.get("expires_at") and invitation["expires_at"] < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Invitation has expired")
+    
+    # Create manager entry
+    manager_dict = {
+        "organizer_id": invitation["organizer_id"],
+        "organizer_name": invitation["organizer_name"],
+        "manager_user_id": str(current_user["_id"]),
+        "name": current_user.get("name"),
+        "phone": current_user.get("phone"),
+        "email": current_user.get("email"),
+        "role_description": invitation["role_description"],
+        "permissions": invitation["permissions"],
+        "is_active": True,
+        "is_verified": True,
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+        "last_active": None
+    }
+    
+    result = await db.organizer_managers.insert_one(manager_dict)
+    
+    # Update invitation status
+    await db.team_invitations.update_one(
+        {"_id": ObjectId(invitation_id)},
+        {"$set": {
+            "status": "accepted",
+            "updated_at": datetime.utcnow()
+        }}
+    )
+    
+    created_manager = await db.organizer_managers.find_one({"_id": result.inserted_id})
+    created_manager["id"] = str(created_manager["_id"])
+    del created_manager["_id"]
+    
+    print(f"[TEAM_INVITATION] Invitation accepted:")
+    print(f"  - User: {current_user.get('name')} ({current_user.get('phone')})")
+    print(f"  - Organizer: {invitation['organizer_name']}")
+    print(f"  - Permissions: {invitation['permissions']}")
+    
+    return created_manager
+
+
+@router.post("/invitations/{invitation_id}/reject")
+async def reject_team_invitation(
+    invitation_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Reject team invitation"""
+    db = get_database()
+    
+    try:
+        invitation = await db.team_invitations.find_one({"_id": ObjectId(invitation_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid invitation ID")
+    
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    
+    # Check if invitation is for current user
+    if invitation["user_id"] != str(current_user["_id"]):
+        raise HTTPException(status_code=403, detail="This invitation is not for you")
+    
+    # Check if invitation is still pending
+    if invitation["status"] != "pending":
+        raise HTTPException(status_code=400, detail=f"Invitation already {invitation['status']}")
+    
+    # Update invitation status
+    await db.team_invitations.update_one(
+        {"_id": ObjectId(invitation_id)},
+        {"$set": {
+            "status": "rejected",
+            "updated_at": datetime.utcnow()
+        }}
+    )
+    
+    return {"message": "Invitation rejected"}
+
+
+@router.get("/invitations/sent")
+async def get_sent_invitations(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all invitations sent by current organizer"""
+    db = get_database()
+    
+    # Check if current user is organizer
+    if current_user.get("role") != "organizer":
+        raise HTTPException(status_code=403, detail="Only organizers can view sent invitations")
+    
+    # Find all invitations sent by this organizer
+    invitations_cursor = db.team_invitations.find({
+        "organizer_id": str(current_user["_id"])
+    }).sort([("created_at", -1)])
+    
+    invitations = await invitations_cursor.to_list(length=100)
+    
+    for invitation in invitations:
+        invitation["id"] = str(invitation["_id"])
+        del invitation["_id"]
+    
+    return invitations
 
 
 # ==================== ORGANIZER TEAM MANAGEMENT ENDPOINTS ====================
