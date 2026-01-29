@@ -312,8 +312,6 @@ async def create_profile(
         "email": profile.email,
         "age": profile.age,
         "gender": profile.gender,
-        "role": profile.role,
-        "professional_type": profile.professional_type,
         "city": profile.city,
         "state": profile.state,
         "bio": profile.bio,
@@ -323,9 +321,17 @@ async def create_profile(
         "certification": profile.certification,
         "experience_years": profile.experience_years,
         "children_count": profile.children_count,
-        "onboarding_completed": True,
         "updated_at": datetime.utcnow()
     }
+    
+    # Only set role and professional_type if provided
+    if profile.role:
+        update_data["role"] = profile.role
+    if profile.professional_type:
+        update_data["professional_type"] = profile.professional_type
+    
+    # Don't mark onboarding as completed yet - user still needs to select role
+    # update_data["onboarding_completed"] = True
     
     # Remove None values
     update_data = {k: v for k, v in update_data.items() if v is not None}
