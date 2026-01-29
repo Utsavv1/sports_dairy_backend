@@ -1,10 +1,60 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Optional
 import os
+from urllib.parse import quote_plus
 
 # MongoDB connection settings
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "sports_diary")
+
+# Function to encode MongoDB URL if needed
+def encode_mongodb_url(url: str) -> str:
+    """
+    Encode MongoDB URL credentials if they contain special characters.
+    Handles URLs like: mongodb+srv://username:password@host/database
+    RFC 3986 requires special characters in credentials to be percent-encoded.
+    """
+    if not url or "mongodb" not in url:
+        return url
+    
+    # Check if URL already has encoded credentials (contains %XX patterns)
+    if "%" in url and "@" in url:
+        return url  # Already encoded
+    
+    # If URL has credentials (contains @ symbol)
+    if "@" in url:
+        try:
+            # Determine protocol
+            if "mongodb+srv://" in url:
+                prefix = "mongodb+srv://"
+                rest = url.replace(prefix, "")
+            elif "mongodb://" in url:
+                prefix = "mongodb://"
+                rest = url.replace(prefix, "")
+            else:
+                return url
+            
+            # Split credentials and host
+            credentials, host = rest.split("@", 1)
+            
+            # Split username and password
+            if ":" in credentials:
+                username, password = credentials.split(":", 1)
+                # Encode both username and password using quote_plus
+                # This encodes all special characters including @, :, /, etc.
+                encoded_username = quote_plus(username)
+                encoded_password = quote_plus(password)
+                encoded_url = f"{prefix}{encoded_username}:{encoded_password}@{host}"
+                return encoded_url
+            else:
+                # No password, just encode username
+                encoded_username = quote_plus(credentials)
+                return f"{prefix}{encoded_username}@{host}"
+        except Exception as e:
+            print(f"⚠️ Warning: Could not encode MongoDB URL: {e}")
+            return url
+    
+    return url
 
 # Global MongoDB client
 mongodb_client: Optional[AsyncIOMotorClient] = None
@@ -25,10 +75,20 @@ async def connect_to_mongo():
     """Connect to MongoDB on startup"""
     global mongodb_client
     try:
-        mongodb_client = AsyncIOMotorClient(MONGODB_URL)
+        # Encode URL at connection time
+        encoded_url = encode_mongodb_url(MONGODB_URL)
+        print(f"🔗 Connecting to MongoDB...")
+        
+        # Debug: Check if encoding happened
+        if MONGODB_URL != encoded_url:
+            print(f"✅ MongoDB URL was encoded (special characters detected)")
+        else:
+            print(f"ℹ️ MongoDB URL has no special characters or already encoded")
+        
+        mongodb_client = AsyncIOMotorClient(encoded_url)
         # Verify connection
         await mongodb_client.admin.command('ping')
-        print(f"✅ Connected to MongoDB at {MONGODB_URL}")
+        print(f"✅ Connected to MongoDB successfully")
         print(f"✅ Using database: {DATABASE_NAME}")
         
         # Create indexes for better performance
@@ -36,6 +96,8 @@ async def connect_to_mongo():
         print("✅ Database indexes created")
     except Exception as e:
         print(f"❌ Error connecting to MongoDB: {e}")
+        print(f"❌ Make sure MONGODB_URL environment variable is set correctly")
+        print(f"❌ Credentials must be URL-encoded if they contain special characters")
         raise
 
 # Close MongoDB connection
