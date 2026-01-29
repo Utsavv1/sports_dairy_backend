@@ -34,13 +34,14 @@ def encode_mongodb_url(url: str) -> str:
         else:
             return url
         
-        # Split credentials from host
-        at_index = rest.find("@")
-        if at_index == -1:
+        # CRITICAL FIX: Find the LAST @ symbol (separates credentials from host)
+        # NOT the first one (which might be in the username)
+        last_at_index = rest.rfind("@")  # rfind finds the LAST occurrence
+        if last_at_index == -1:
             return url
         
-        credentials = rest[:at_index]
-        host = rest[at_index + 1:]
+        credentials = rest[:last_at_index]
+        host = rest[last_at_index + 1:]
         
         # Split username and password
         colon_index = credentials.find(":")
