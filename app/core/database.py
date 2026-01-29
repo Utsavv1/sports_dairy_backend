@@ -3,8 +3,8 @@ from typing import Optional
 import os
 from urllib.parse import quote_plus
 
-# MongoDB connection settings
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+# MongoDB connection settings - read at module load time
+_MONGODB_URL_RAW = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "sports_diary")
 
 # Function to encode MongoDB URL if needed
@@ -56,6 +56,9 @@ def encode_mongodb_url(url: str) -> str:
     
     return url
 
+# Encode URL at module load time
+MONGODB_URL = encode_mongodb_url(_MONGODB_URL_RAW)
+
 # Global MongoDB client
 mongodb_client: Optional[AsyncIOMotorClient] = None
 
@@ -75,17 +78,12 @@ async def connect_to_mongo():
     """Connect to MongoDB on startup"""
     global mongodb_client
     try:
-        # Encode URL at connection time
-        encoded_url = encode_mongodb_url(MONGODB_URL)
         print(f"🔗 Connecting to MongoDB...")
+        print(f"📝 Database: {DATABASE_NAME}")
         
-        # Debug: Check if encoding happened
-        if MONGODB_URL != encoded_url:
-            print(f"✅ MongoDB URL was encoded (special characters detected)")
-        else:
-            print(f"ℹ️ MongoDB URL has no special characters or already encoded")
+        # MONGODB_URL is already encoded at module load time
+        mongodb_client = AsyncIOMotorClient(MONGODB_URL)
         
-        mongodb_client = AsyncIOMotorClient(encoded_url)
         # Verify connection
         await mongodb_client.admin.command('ping')
         print(f"✅ Connected to MongoDB successfully")
