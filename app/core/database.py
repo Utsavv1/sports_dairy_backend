@@ -1,10 +1,58 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Optional
 import os
+from urllib.parse import quote_plus
 
 # MongoDB connection settings
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "sports_diary")
+
+# Function to encode MongoDB URL if needed
+def encode_mongodb_url(url: str) -> str:
+    """
+    Encode MongoDB URL credentials if they contain special characters.
+    Handles URLs like: mongodb+srv://username:password@host/database
+    """
+    if "mongodb" not in url:
+        return url
+    
+    # Check if URL already has encoded credentials (contains %XX patterns)
+    if "%" in url and "@" in url:
+        return url  # Already encoded
+    
+    # If URL has credentials (contains @ symbol)
+    if "@" in url:
+        try:
+            # Split the URL into parts
+            if "mongodb+srv://" in url:
+                prefix = "mongodb+srv://"
+                rest = url.replace(prefix, "")
+            elif "mongodb://" in url:
+                prefix = "mongodb://"
+                rest = url.replace(prefix, "")
+            else:
+                return url
+            
+            # Split credentials and host
+            if "@" in rest:
+                credentials, host = rest.split("@", 1)
+                
+                # Split username and password
+                if ":" in credentials:
+                    username, password = credentials.split(":", 1)
+                    # Encode username and password
+                    encoded_username = quote_plus(username)
+                    encoded_password = quote_plus(password)
+                    # Reconstruct URL
+                    return f"{prefix}{encoded_username}:{encoded_password}@{host}"
+        except Exception as e:
+            print(f"⚠️ Warning: Could not encode MongoDB URL: {e}")
+            return url
+    
+    return url
+
+# Encode the MongoDB URL
+MONGODB_URL = encode_mongodb_url(MONGODB_URL)
 
 # Global MongoDB client
 mongodb_client: Optional[AsyncIOMotorClient] = None
