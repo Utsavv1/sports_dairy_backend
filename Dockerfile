@@ -18,14 +18,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements file
-COPY requirements.txt .
+COPY ./requirements.txt /app/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy application code
-COPY . .
+COPY . /app/
 
 # Create directory for uploads
 RUN mkdir -p /app/uploads /app/uploads/community
