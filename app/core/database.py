@@ -3,56 +3,77 @@ from typing import Optional
 import os
 from urllib.parse import quote_plus
 
-# MongoDB connection settings
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+# MongoDB connection settings - read at module load time
+_MONGODB_URL_RAW = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "sports_diary")
 
-# Function to encode MongoDB URL if needed
 def encode_mongodb_url(url: str) -> str:
     """
-    Encode MongoDB URL credentials if they contain special characters.
-    Handles URLs like: mongodb+srv://username:password@host/database
+    Encode MongoDB URL credentials according to RFC 3986.
+    This is CRITICAL - MongoDB driver requires credentials to be percent-encoded.
     """
-    if "mongodb" not in url:
+    if not url:
         return url
     
-    # Check if URL already has encoded credentials (contains %XX patterns)
-    if "%" in url and "@" in url:
-        return url  # Already encoded
+    # If already encoded (has % signs), return as-is
+    if "%" in url:
+        return url
     
-    # If URL has credentials (contains @ symbol)
-    if "@" in url:
-        try:
-            # Split the URL into parts
-            if "mongodb+srv://" in url:
-                prefix = "mongodb+srv://"
-                rest = url.replace(prefix, "")
-            elif "mongodb://" in url:
-                prefix = "mongodb://"
-                rest = url.replace(prefix, "")
-            else:
-                return url
-            
-            # Split credentials and host
-            if "@" in rest:
-                credentials, host = rest.split("@", 1)
-                
-                # Split username and password
-                if ":" in credentials:
-                    username, password = credentials.split(":", 1)
-                    # Encode username and password
-                    encoded_username = quote_plus(username)
-                    encoded_password = quote_plus(password)
-                    # Reconstruct URL
-                    return f"{prefix}{encoded_username}:{encoded_password}@{host}"
-        except Exception as e:
-            print(f"⚠️ Warning: Could not encode MongoDB URL: {e}")
+    # Must have @ to have credentials
+    if "@" not in url:
+        return url
+    
+    try:
+        # Split protocol from rest
+        if url.startswith("mongodb+srv://"):
+            protocol = "mongodb+srv://"
+            rest = url[14:]  # len("mongodb+srv://") = 14
+        elif url.startswith("mongodb://"):
+            protocol = "mongodb://"
+            rest = url[10:]  # len("mongodb://") = 10
+        else:
             return url
-    
-    return url
+        
+        # CRITICAL FIX: Find the LAST @ symbol (separates credentials from host)
+        # NOT the first one (which might be in the username)
+        last_at_index = rest.rfind("@")  # rfind finds the LAST occurrence
+        if last_at_index == -1:
+            return url
+        
+        credentials = rest[:last_at_index]
+        host = rest[last_at_index + 1:]
+        
+        # Split username and password
+        colon_index = credentials.find(":")
+        if colon_index == -1:
+            # No password, just username
+            username = credentials
+            password = ""
+        else:
+            username = credentials[:colon_index]
+            password = credentials[colon_index + 1:]
+        
+        # Encode username and password
+        encoded_username = quote_plus(username)
+        encoded_password = quote_plus(password) if password else ""
+        
+        # Reconstruct URL
+        if password:
+            encoded_credentials = f"{encoded_username}:{encoded_password}"
+        else:
+            encoded_credentials = encoded_username
+        
+        encoded_url = f"{protocol}{encoded_credentials}@{host}"
+        return encoded_url
+        
+    except Exception as e:
+        print(f"ERROR encoding MongoDB URL: {e}")
+        return url
 
-# Encode the MongoDB URL
-MONGODB_URL = encode_mongodb_url(MONGODB_URL)
+# CRITICAL: Encode URL immediately at module load time
+print(f"[STARTUP] Loading MongoDB configuration...")
+MONGODB_URL = encode_mongodb_url(_MONGODB_URL_RAW)
+print(f"[STARTUP] MongoDB URL configured (encoding applied if needed)")
 
 # Global MongoDB client
 mongodb_client: Optional[AsyncIOMotorClient] = None
@@ -73,17 +94,59 @@ async def connect_to_mongo():
     """Connect to MongoDB on startup"""
     global mongodb_client
     try:
-        mongodb_client = AsyncIOMotorClient(MONGODB_URL)
+        print(f"[MONGO] Connecting to MongoDB...")
+        print(f"[MONGO] Database: {DATABASE_NAME}")
+        
+        # Use the pre-encoded MONGODB_URL
+        # Important: Don't pass ssl=True for mongodb+srv:// (it's automatic)
+        # Remove any problematic SSL options from the URL
+        clean_url = MONGODB_URL
+        
+        # Remove problematic SSL options if present
+        if "ssl_cert_reqs=" in clean_url:
+            # Remove ssl_cert_reqs parameter
+            parts = clean_url.split("?")
+            if len(parts) > 1:
+                params = parts[1].split("&")
+                params = [p for p in params if not p.startswith("ssl_cert_reqs=")]
+                clean_url = parts[0]
+                if params:
+                    clean_url += "?" + "&".join(params)
+        
+        print(f"[MONGO] Creating MongoDB client...")
+        
+        # Create client with proper SSL settings
+        # For mongodb+srv://, SSL is automatic
+        # For mongodb://, we need to specify SSL
+        if clean_url.startswith("mongodb+srv://"):
+            # MongoDB Atlas - SSL is automatic
+            mongodb_client = AsyncIOMotorClient(
+                clean_url,
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000,
+                retryWrites=True
+            )
+        else:
+            # Local MongoDB
+            mongodb_client = AsyncIOMotorClient(
+                clean_url,
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000
+            )
+        
+        print(f"[MONGO] Verifying connection with ping...")
         # Verify connection
         await mongodb_client.admin.command('ping')
-        print(f"✅ Connected to MongoDB at {MONGODB_URL}")
-        print(f"✅ Using database: {DATABASE_NAME}")
+        print(f"[MONGO] ✅ Connected to MongoDB successfully")
+        print(f"[MONGO] ✅ Using database: {DATABASE_NAME}")
         
         # Create indexes for better performance
         await create_indexes()
-        print("✅ Database indexes created")
+        print(f"[MONGO] ✅ Database indexes created")
     except Exception as e:
-        print(f"❌ Error connecting to MongoDB: {e}")
+        print(f"[MONGO] ❌ FAILED to connect to MongoDB")
+        print(f"[MONGO] Error: {e}")
+        print(f"[MONGO] Make sure MONGODB_URL environment variable is set correctly")
         raise
 
 # Close MongoDB connection
