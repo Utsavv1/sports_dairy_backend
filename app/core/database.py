@@ -98,8 +98,43 @@ async def connect_to_mongo():
         print(f"[MONGO] Database: {DATABASE_NAME}")
         
         # Use the pre-encoded MONGODB_URL
-        mongodb_client = AsyncIOMotorClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
+        # Important: Don't pass ssl=True for mongodb+srv:// (it's automatic)
+        # Remove any problematic SSL options from the URL
+        clean_url = MONGODB_URL
         
+        # Remove problematic SSL options if present
+        if "ssl_cert_reqs=" in clean_url:
+            # Remove ssl_cert_reqs parameter
+            parts = clean_url.split("?")
+            if len(parts) > 1:
+                params = parts[1].split("&")
+                params = [p for p in params if not p.startswith("ssl_cert_reqs=")]
+                clean_url = parts[0]
+                if params:
+                    clean_url += "?" + "&".join(params)
+        
+        print(f"[MONGO] Creating MongoDB client...")
+        
+        # Create client with proper SSL settings
+        # For mongodb+srv://, SSL is automatic
+        # For mongodb://, we need to specify SSL
+        if clean_url.startswith("mongodb+srv://"):
+            # MongoDB Atlas - SSL is automatic
+            mongodb_client = AsyncIOMotorClient(
+                clean_url,
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000,
+                retryWrites=True
+            )
+        else:
+            # Local MongoDB
+            mongodb_client = AsyncIOMotorClient(
+                clean_url,
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000
+            )
+        
+        print(f"[MONGO] Verifying connection with ping...")
         # Verify connection
         await mongodb_client.admin.command('ping')
         print(f"[MONGO] ✅ Connected to MongoDB successfully")

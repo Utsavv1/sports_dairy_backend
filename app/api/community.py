@@ -195,8 +195,8 @@ async def create_post(
         raise HTTPException(status_code=403, detail="Must be a member to post")
     
     # Validate media type
-    if media_type and media_type not in ["image", "video"]:
-        raise HTTPException(status_code=400, detail="Media type must be 'image' or 'video'")
+    if media_type and media_type not in ["image", "video", "location"]:
+        raise HTTPException(status_code=400, detail="Media type must be 'image', 'video', or 'location'")
     
     post_dict = {
         "community_id": community_id,
@@ -333,3 +333,176 @@ async def upload_community_image(
         "content_type": file.content_type
     }
 
+
+# ==================== POLL ENDPOINTS ====================
+
+@router.post("/{community_id}/polls")
+async def create_poll(
+    community_id: str,
+    question: str,
+    options: list,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a poll in community"""
+    db = get_database()
+    
+    # Validate question
+    if not question or len(question) > 200:
+        raise HTTPException(status_code=400, detail="Question must be 1-200 characters")
+    
+    # Validate options
+    if not options or len(options) < 2 or len(options) > 6:
+        raise HTTPException(status_code=400, detail="Poll must have 2-6 options")
+    
+    # Check if user is a member
+    member = await db.community_members.find_one({
+        "community_id": community_id,
+        "user_id": str(current_user["_id"]),
+        "is_active": True
+    })
+    
+    if not member:
+        raise HTTPException(status_code=403, detail="Must be a member to create polls")
+    
+    # Create poll with options
+    poll_options = [
+        {
+            "id": str(ObjectId()),
+            "text": option,
+            "votes": 0,
+            "voters": []
+        }
+        for option in options
+    ]
+    
+    poll_dict = {
+        "community_id": community_id,
+        "user_id": str(current_user["_id"]),
+        "user_name": current_user.get("name", "Anonymous"),
+        "user_avatar": current_user.get("avatar"),
+        "question": question,
+        "options": poll_options,
+        "total_votes": 0,
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+        "is_active": True
+    }
+    
+    result = await db.community_polls.insert_one(poll_dict)
+    
+    # Return the created poll
+    created_poll = await db.community_polls.find_one({"_id": result.inserted_id})
+    if created_poll:
+        created_poll["id"] = str(created_poll["_id"])
+        del created_poll["_id"]
+        
+        if "created_at" in created_poll and created_poll["created_at"]:
+            created_poll["created_at"] = created_poll["created_at"].isoformat() + "Z"
+        if "updated_at" in created_poll and created_poll["updated_at"]:
+            created_poll["updated_at"] = created_poll["updated_at"].isoformat() + "Z"
+        
+        return created_poll
+    
+    return {"message": "Poll created successfully", "poll_id": str(result.inserted_id)}
+
+
+@router.get("/{community_id}/polls")
+async def get_community_polls(
+    community_id: str,
+    skip: int = 0,
+    limit: int = 20
+):
+    """Get community polls"""
+    db = get_database()
+    
+    polls_cursor = db.community_polls.find({
+        "community_id": community_id,
+        "is_active": True
+    }).skip(skip).limit(limit).sort([("created_at", -1)])
+    
+    polls = await polls_cursor.to_list(length=limit)
+    
+    for poll in polls:
+        poll["id"] = str(poll["_id"])
+        del poll["_id"]
+        
+        if "created_at" in poll and poll["created_at"]:
+            poll["created_at"] = poll["created_at"].isoformat() + "Z" if hasattr(poll["created_at"], 'isoformat') else poll["created_at"]
+        if "updated_at" in poll and poll["updated_at"]:
+            poll["updated_at"] = poll["updated_at"].isoformat() + "Z" if hasattr(poll["updated_at"], 'isoformat') else poll["updated_at"]
+    
+    return polls
+
+
+@router.post("/{community_id}/polls/{poll_id}/vote")
+async def vote_on_poll(
+    community_id: str,
+    poll_id: str,
+    option_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Vote on a poll option"""
+    db = get_database()
+    
+    # Check if user is a member
+    member = await db.community_members.find_one({
+        "community_id": community_id,
+        "user_id": str(current_user["_id"]),
+        "is_active": True
+    })
+    
+    if not member:
+        raise HTTPException(status_code=403, detail="Must be a member to vote")
+    
+    try:
+        poll = await db.community_polls.find_one({"_id": ObjectId(poll_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid poll ID")
+    
+    if not poll:
+        raise HTTPException(status_code=404, detail="Poll not found")
+    
+    # Check if user already voted
+    user_id = str(current_user["_id"])
+    for option in poll.get("options", []):
+        if user_id in option.get("voters", []):
+            raise HTTPException(status_code=400, detail="You have already voted on this poll")
+    
+    # Find and update the option
+    option_found = False
+    for option in poll.get("options", []):
+        if option["id"] == option_id:
+            option["votes"] += 1
+            option["voters"].append(user_id)
+            option_found = True
+            break
+    
+    if not option_found:
+        raise HTTPException(status_code=400, detail="Invalid option ID")
+    
+    # Update poll
+    await db.community_polls.update_one(
+        {"_id": ObjectId(poll_id)},
+        {
+            "$set": {
+                "options": poll["options"],
+                "total_votes": poll.get("total_votes", 0) + 1,
+                "updated_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    # Return updated poll
+    updated_poll = await db.community_polls.find_one({"_id": ObjectId(poll_id)})
+    if updated_poll:
+        updated_poll["id"] = str(updated_poll["_id"])
+        del updated_poll["_id"]
+        
+        if "created_at" in updated_poll and updated_poll["created_at"]:
+            updated_poll["created_at"] = updated_poll["created_at"].isoformat() + "Z"
+        if "updated_at" in updated_poll and updated_poll["updated_at"]:
+            updated_poll["updated_at"] = updated_poll["updated_at"].isoformat() + "Z"
+        
+        return updated_poll
+    
+    return {"message": "Vote recorded successfully"}
