@@ -24,9 +24,9 @@ async def create_availability(
     """Create professional availability for matches"""
     db = get_database()
     
-    # Check if user is a professional
-    if current_user.get("role") != "professional":
-        raise HTTPException(status_code=403, detail="Only professionals can create availability")
+    # Allow both professionals and players to create availability
+    if current_user.get("role") not in ["professional", "player"]:
+        raise HTTPException(status_code=403, detail="Only professionals and players can create availability")
     
     availability_dict = availability_data.dict()
     availability_dict["professional_id"] = str(current_user["_id"])
@@ -59,8 +59,9 @@ async def get_my_availability(
     """Get current user's professional availability"""
     db = get_database()
     
-    if current_user.get("role") != "professional":
-        raise HTTPException(status_code=403, detail="Only professionals can view availability")
+    # Allow both professionals and players to view their availability
+    if current_user.get("role") not in ["professional", "player"]:
+        raise HTTPException(status_code=403, detail="Only professionals and players can view availability")
     
     availability_cursor = db.professional_availability.find({
         "professional_id": str(current_user["_id"])

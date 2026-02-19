@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
 from datetime import datetime
 from bson import ObjectId
+from pydantic import BaseModel
 
 from app.core.database import get_database
 from app.core.security import get_current_user
@@ -494,3 +495,190 @@ async def get_registration(
     del registration["_id"]  # Remove ObjectId
     return registration
 
+
+# ==================== ORGANIZER TEAM REGISTRATION ENDPOINTS ====================
+
+class OrganizerAddTeamRequest(BaseModel):
+    team_name: str
+    captain_name: str
+    captain_phone: str
+    captain_email: Optional[str] = None
+    player_count: int = 11
+    notes: Optional[str] = None
+
+@router.post("/{tournament_id}/add-team")
+async def organizer_add_team(
+    tournament_id: str,
+    team_data: OrganizerAddTeamRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Organizer or admin adds a team to tournament manually"""
+    db = get_database()
+    
+    user_id = str(current_user["_id"])
+    
+    # Verify tournament exists
+    try:
+        tournament = await db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid tournament ID")
+    
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+    
+    tournament_organizer_id = str(tournament.get("organizer_id"))
+    
+    # Check if user is the organizer
+    is_authorized = False
+    added_by_role = "organizer"
+    
+    if user_id == tournament_organizer_id:
+        is_authorized = True
+        added_by_role = "organizer"
+    else:
+        # Check if user is a manager with appropriate permission
+        manager = await db.organizer_managers.find_one({
+            "manager_user_id": user_id,
+            "organizer_id": tournament_organizer_id,
+            "is_active": True
+        })
+        
+        if manager:
+            # Check if manager has edit_tournament or a new add_team permission
+            permissions = manager.get("permissions", [])
+            if "edit_tournament" in permissions or "add_team" in permissions:
+                is_authorized = True
+                added_by_role = "admin"
+    
+    if not is_authorized:
+        raise HTTPException(
+            status_code=403, 
+            detail="Only tournament organizers and their admins can add teams"
+        )
+    
+    # Check if tournament is accepting registrations
+    if tournament["current_teams"] >= tournament["max_teams"]:
+        raise HTTPException(status_code=400, detail="Tournament is full")
+    
+    # Check if team with same name already registered
+    existing_registration = await db.tournament_registrations.find_one({
+        "tournament_id": tournament_id,
+        "team_name": team_data.team_name
+    })
+    
+    if existing_registration:
+        raise HTTPException(status_code=400, detail=f"Team '{team_data.team_name}' is already registered")
+    
+    # Generate registration number
+    reg_count = await db.tournament_registrations.count_documents({})
+    registration_number = f"REG-TOUR{tournament_id[-3:]}-TEAM{reg_count + 1:04d}"
+    
+    # Create the registration
+    registration_dict = {
+        "tournament_id": tournament_id,
+        "team_id": None,  # No team ID - manual entry
+        "team_name": team_data.team_name,
+        "captain_name": team_data.captain_name,
+        "captain_phone": team_data.captain_phone,
+        "captain_email": team_data.captain_email,
+        "player_count": team_data.player_count,
+        "notes": team_data.notes,
+        "registered_by": user_id,
+        "added_by_organizer": True,
+        "added_by_role": added_by_role,
+        "registration_number": registration_number,
+        "registration_date": datetime.utcnow(),
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+        "status": "confirmed",  # Auto-confirm when added by organizer
+        "payment_status": "paid"  # Organizer handles payment offline
+    }
+    
+    result = await db.tournament_registrations.insert_one(registration_dict)
+    
+    # Increment tournament's current_teams count
+    await db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$inc": {"current_teams": 1}}
+    )
+    
+    created_registration = await db.tournament_registrations.find_one({"_id": result.inserted_id})
+    created_registration["id"] = str(created_registration["_id"])
+    del created_registration["_id"]
+    
+    print(f"[TOURNAMENT] Team added by {added_by_role}:")
+    print(f"  - Tournament: {tournament.get('name')}")
+    print(f"  - Team: {team_data.team_name}")
+    print(f"  - Added by: {current_user.get('name')}")
+    
+    return created_registration
+
+
+@router.delete("/{tournament_id}/registrations/{registration_id}")
+async def remove_team_registration(
+    tournament_id: str,
+    registration_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Remove a team registration from tournament (organizer/admin only)"""
+    db = get_database()
+    
+    user_id = str(current_user["_id"])
+    
+    # Verify tournament exists
+    try:
+        tournament = await db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    except:
+        raise HTTPException(status_code=400, detail="Invalid tournament ID")
+    
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+    
+    tournament_organizer_id = str(tournament.get("organizer_id"))
+    
+    # Check authorization
+    is_authorized = False
+    
+    if user_id == tournament_organizer_id:
+        is_authorized = True
+    else:
+        # Check if user is a manager with appropriate permission
+        manager = await db.organizer_managers.find_one({
+            "manager_user_id": user_id,
+            "organizer_id": tournament_organizer_id,
+            "is_active": True
+        })
+        
+        if manager:
+            permissions = manager.get("permissions", [])
+            if "edit_tournament" in permissions:
+                is_authorized = True
+    
+    if not is_authorized:
+        raise HTTPException(
+            status_code=403, 
+            detail="Only tournament organizers and their admins can remove teams"
+        )
+    
+    # Verify registration exists
+    try:
+        registration = await db.tournament_registrations.find_one({
+            "_id": ObjectId(registration_id),
+            "tournament_id": tournament_id
+        })
+    except:
+        raise HTTPException(status_code=400, detail="Invalid registration ID")
+    
+    if not registration:
+        raise HTTPException(status_code=404, detail="Registration not found")
+    
+    # Delete the registration
+    await db.tournament_registrations.delete_one({"_id": ObjectId(registration_id)})
+    
+    # Decrement tournament's current_teams count
+    await db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$inc": {"current_teams": -1}}
+    )
+    
+    return {"message": "Team registration removed successfully"}
