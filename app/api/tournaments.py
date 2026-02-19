@@ -177,26 +177,55 @@ async def update_tournament(
         raise HTTPException(status_code=404, detail="Tournament not found")
     
     user_id = str(current_user["_id"])
+    tournament_org_id = str(tournament["organizer_id"])
+    
+    print(f"[UPDATE_TOURNAMENT] Permission check:")
+    print(f"  - User ID: {user_id}")
+    print(f"  - Tournament Organizer ID: {tournament_org_id}")
+    print(f"  - Is Main Organizer: {user_id == tournament_org_id}")
     
     # Check if user is the organizer
-    if str(tournament["organizer_id"]) == user_id:
+    if user_id == tournament_org_id:
         # Organizer has full access
+        print(f"[UPDATE_TOURNAMENT] User is main organizer - ALLOWED")
         pass
     else:
         # Check if user is a manager with permission
+        print(f"[UPDATE_TOURNAMENT] Checking manager permissions...")
+        
         manager = await db.organizer_managers.find_one({
             "manager_user_id": user_id,
-            "organizer_id": str(tournament["organizer_id"]),
+            "organizer_id": tournament_org_id,
             "is_active": True
         })
         
+        print(f"[UPDATE_TOURNAMENT] Manager found: {manager is not None}")
+        
         if not manager:
+            # Try alternative query with ObjectId
+            try:
+                manager = await db.organizer_managers.find_one({
+                    "manager_user_id": user_id,
+                    "organizer_id": ObjectId(tournament_org_id),
+                    "is_active": True
+                })
+                print(f"[UPDATE_TOURNAMENT] Manager found (ObjectId query): {manager is not None}")
+            except:
+                pass
+        
+        if not manager:
+            print(f"[UPDATE_TOURNAMENT] No manager record found - DENIED")
             raise HTTPException(status_code=403, detail="Not authorized to edit this tournament")
         
         # Check permission
         permissions = manager.get("permissions", [])
+        print(f"[UPDATE_TOURNAMENT] Manager permissions: {permissions}")
+        
         if "edit_tournament" not in permissions:
+            print(f"[UPDATE_TOURNAMENT] Missing edit_tournament permission - DENIED")
             raise HTTPException(status_code=403, detail="You don't have permission to edit tournaments")
+        
+        print(f"[UPDATE_TOURNAMENT] Manager has edit_tournament permission - ALLOWED")
     
     update_data = {k: v for k, v in tournament_data.dict(exclude_unset=True).items() if v is not None}
     update_data["updated_at"] = datetime.utcnow()

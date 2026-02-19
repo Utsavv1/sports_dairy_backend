@@ -658,6 +658,9 @@ async def check_my_permissions(
     db = get_database()
     
     user_id = str(current_user["_id"])
+    user_name = current_user.get("name", "Unknown")
+    
+    print(f"[CHECK_PERMISSION] Checking permissions for user: {user_name} ({user_id})")
     
     # First check if user is a manager
     manager = await db.organizer_managers.find_one({
@@ -667,16 +670,24 @@ async def check_my_permissions(
     
     if manager:
         # User is a manager - return parent organizer's info
+        org_id = str(manager["organizer_id"])
+        permissions = manager.get("permissions", [])
+        
+        print(f"[CHECK_PERMISSION] User is manager")
+        print(f"  - Organizer ID: {org_id}")
+        print(f"  - Permissions: {permissions}")
+        
         return {
             "is_organizer": False,
             "is_manager": True,
-            "organizer_id": str(manager["organizer_id"]),
+            "organizer_id": org_id,
             "organizer_name": manager.get("organizer_name"),
-            "permissions": manager.get("permissions", [])
+            "permissions": permissions
         }
     
     # If not a manager, check if user is an organizer
     if current_user.get("role") == "organizer":
+        print(f"[CHECK_PERMISSION] User is organizer")
         return {
             "is_organizer": True,
             "is_manager": False,
@@ -684,6 +695,7 @@ async def check_my_permissions(
             "permissions": ["create_tournament", "edit_tournament", "view_registrations", "manage_team"]
         }
     
+    print(f"[CHECK_PERMISSION] User is neither organizer nor manager")
     return {
         "is_organizer": False,
         "is_manager": False,
