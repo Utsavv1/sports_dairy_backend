@@ -113,31 +113,42 @@ async def create_tournament(
     tournament_data: TournamentCreate,
     current_user: dict = Depends(get_current_user)
 ):
-    """Create new tournament (organizers and their managers)"""
+    """Create new tournament (any authenticated user can create)"""
     db = get_database()
     
     user_id = str(current_user["_id"])
     organizer_id = user_id
     created_by_manager = False
+    user_role = current_user.get("role", "player")
     
-    # Check if user is organizer or manager with permission
-    if current_user.get("role") != "organizer":
+    print(f"[CREATE_TOURNAMENT] User creating tournament:")
+    print(f"  - User ID: {user_id}")
+    print(f"  - User Role: {user_role}")
+    print(f"  - Tournament Name: {tournament_data.name}")
+    
+    # If user is not an organizer, check if they're a manager
+    if user_role != "organizer":
         # Check if user is a manager
         manager = await db.organizer_managers.find_one({
             "manager_user_id": user_id,
             "is_active": True
         })
         
-        if not manager:
-            raise HTTPException(status_code=403, detail="Only organizers or their managers can create tournaments")
-        
-        # Check permission
-        permissions = manager.get("permissions", [])
-        if "create_tournament" not in permissions:
-            raise HTTPException(status_code=403, detail="You don't have permission to create tournaments")
-        
-        organizer_id = str(manager["organizer_id"])
-        created_by_manager = True
+        if manager:
+            # User is a manager - check permission
+            permissions = manager.get("permissions", [])
+            if "create_tournament" not in permissions:
+                print(f"[CREATE_TOURNAMENT] Manager lacks create_tournament permission - DENIED")
+                raise HTTPException(status_code=403, detail="You don't have permission to create tournaments")
+            
+            organizer_id = str(manager["organizer_id"])
+            created_by_manager = True
+            print(f"[CREATE_TOURNAMENT] User is manager for organizer: {organizer_id}")
+        else:
+            # User is not an organizer or manager - they can still create as themselves
+            print(f"[CREATE_TOURNAMENT] User is {user_role} - creating as individual organizer")
+            # User becomes their own organizer
+            organizer_id = user_id
     
     tournament_dict = tournament_data.dict()
     tournament_dict["organizer_id"] = organizer_id
@@ -155,6 +166,8 @@ async def create_tournament(
     created_tournament["id"] = str(created_tournament["_id"])
 
     del created_tournament["_id"]  # Remove ObjectId
+    
+    print(f"[CREATE_TOURNAMENT] Tournament created successfully: {created_tournament['id']}")
     
     return created_tournament
 
