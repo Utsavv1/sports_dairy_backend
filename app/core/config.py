@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_WINDOW_SECONDS: int = 60
     
     # CORS settings
-    CORS_ORIGINS: list = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+    CORS_ORIGINS: list = os.getenv("CORS_ORIGINS", "http://localhost:3003,http://localhost:5173").split(",")
     
     class Config:
         env_file = ".env"

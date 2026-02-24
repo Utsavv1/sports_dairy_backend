@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: sports_diary_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - sports_diary_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sports_diary_backend
+    ports:
+      - "8003:8003"
+    environment:
+      MONGODB_URL: mongodb://admin:password@mongodb:27017/sports_diary?authSource=admin
+      ENVIRONMENT: production
+      PORT: 8003
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+    networks:
+      - sports_diary_network
+    restart: unless-stopped
+
+volumes:
+  mongodb_data:
+
+networks:
+  sports_diary_network:
+    driver: bridge

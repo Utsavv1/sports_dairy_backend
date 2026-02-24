@@ -15,7 +15,7 @@ app = FastAPI(
 # CORS configuration
 # Accepts: localhost (dev), Vercel domains (prod), and custom domains
 allowed_origins = [
-    "http://localhost:3000",
+    "http://localhost:3003",
     "http://localhost:3001",
     "http://localhost:5173",
     "https://*.vercel.app",

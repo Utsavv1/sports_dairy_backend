@@ -23,7 +23,7 @@ def get_network_addresses(port=8000):
     return addresses
 
 if __name__ == "__main__":
-    PORT = 8000
+    PORT = 8003
     
     # Get and display all network addresses
     addresses = get_network_addresses(PORT)
